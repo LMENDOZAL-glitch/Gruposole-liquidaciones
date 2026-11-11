@@ -130,8 +130,9 @@ async function commitImport(db,p,current){
     tx.set(item.ref,{...toFirestore(item.payload),revision:'migracion-v124-'+dateSuffix(),
      version:126,autor:firebase.auth().currentUser.uid,actualizado:time});
    }else if(item.kind==='archive'){
-    // No se elimina el documento: se conserva completo y se excluye de la lista activa.
-    tx.update(item.ref,{archivadoV124:true,fechaArchivoV124:time});
+    // Marcado lógico: conserva íntegros los datos anteriores en Firestore.
+    // Se utiliza el campo 'eliminada' que ya admite el sistema actual.
+    tx.update(item.ref,{eliminada:true,actualizado:time});
    }else{
     tx.set(item.ref,{json:JSON.stringify(p.hist),formato:'sole-v124',
       actualizado:time,autor:firebase.auth().currentUser.uid});
@@ -145,6 +146,7 @@ async function performMigration(file,button){
  working=true;button.disabled=true;
  try{
   if(!checkLoggedAdmin())throw Error('Solo el administrador, sin cambios pendientes, puede realizar esta operación.');
+  setProgress('Validando que el archivo contiene exactamente las liquidaciones reales...');
   if(file.size>3500000)throw Error('El archivo seleccionado es demasiado grande.');
   const p=preflight(JSON.parse(await file.text()));
   const ok=confirm(
@@ -161,6 +163,7 @@ async function performMigration(file,button){
   if(!user)throw Error('Tu sesión ha expirado.');
   const userDoc=await db.collection('usuarios').doc(user.uid).get({source:'server'});
   if(userDoc.data()?.rol!=='Administrador')throw Error('Tu cuenta ya no tiene permisos de administrador.');
+  setProgress('Descargando copia completa de los datos actuales de Firebase...');
   const current=await retrieveCurrent(db);
   const name=saveBackup(current);
   const backedUp=confirm('RESPALDO OBLIGATORIO\n\nSe solicitó descargar:\n'+name+
@@ -169,16 +172,19 @@ async function performMigration(file,button){
     'CANCELAR: No modificar Firebase.');
   if(!backedUp)return;
   if(!checkLoggedAdmin())throw Error('Hay cambios pendientes: migración detenida sin modificar Firebase.');
+  setProgress('Copia confirmada. Sustituyendo datos en Firebase sin borrar documentos...');
   const result=await commitImport(db,p,current);
   const verify=await db.collection(COLLECTION).get({source:'server'});
   const ids=new Set(p.docs.map(d=>d.claim));
-  const unexpected=verify.docs.filter(d=>!ids.has(d.id)&&!d.data().archivadoV124);
+  const unexpected=verify.docs.filter(d=>!ids.has(d.id)&&!d.data().eliminada&&!d.data().archivadoV124);
   const missing=p.docs.filter(d=>!verify.docs.some(v=>v.id===d.claim));
   if(unexpected.length||missing.length)throw Error('La operación terminó, pero quedan diferencias: '+unexpected.length+' extras visibles, '+missing.length+' faltantes. Conserva el respaldo y comunica el problema.');
+  setProgress('Restauración terminada. Comprobando actualización de la página...');
   alert('Migración V124 confirmada en Firebase.\nProductos: '+p.products+' · Cajas: '+p.boxes+
     '\nDocumentos actualizados: '+result.guardados+'\nDocumentos anteriores conservados y archivados: '+result.archivados+
     '\nNo se borró ningún documento.\nLa página se actualizará con la sincronización en vivo.');
  }catch(e){
+  setProgress('No se aplicó la restauración: '+(e.message||e),true);
   alert('NO SE COMPLETÓ LA MIGRACIÓN: '+(e.message||e)+'\nRevisa el estado antes de volver a intentarlo.');
   console.error('Migración V124:',e);
  }finally{
@@ -186,19 +192,66 @@ async function performMigration(file,button){
   const input=$('soleV124File');if(input)input.value='';
  }
 }
+function setProgress(message,isError){
+ const el=$('soleV124Progress');
+ if(el){el.textContent=message;el.style.color=isError?'#9b2626':'#14506b'}
+}
+function liveCount(){
+ try {return typeof productClaimData==='function'?productClaimData().length:null}
+ catch(e){return null}
+}
 function setup(){
  if($('soleV124Import'))return;
- const userTools=$('soleUserTools');if(!userTools)return;
+ const tools=$('soleUserTools');
+ if(!tools)return;
  const btn=document.createElement('button');
- btn.id='soleV124Import';btn.type='button';btn.textContent='Restaurar 37 liquidaciones V124';
- btn.title='Administrador: validar, descargar respaldo completo y actualizar Firestore sin eliminar documentos';
- btn.style.cssText='display:none;background:#124d64;color:white;border:1px solid #87aab7;border-radius:6px;padding:8px 11px;cursor:pointer;';
- const file=document.createElement('input');file.id='soleV124File';file.type='file';file.accept='.json,application/json';file.hidden=true;
- userTools.insertBefore(btn,$('soleLogout')||null);userTools.appendChild(file);
- btn.addEventListener('click',()=>{if(!checkLoggedAdmin()){alert('Inicia sesión como administrador y espera la sincronización completa.');return}file.click()});
+ btn.id='soleV124Import';btn.type='button';
+ btn.textContent='Restaurar 37 liquidaciones V124';
+ btn.title='Respaldo obligatorio antes de restaurar las liquidaciones reales';
+ btn.style.cssText='background:#124d64;color:#fff;border:1px solid #87aab7;border-radius:6px;padding:8px 11px;cursor:pointer;';
+ const file=document.createElement('input');
+ file.id='soleV124File';file.type='file';file.accept='.json,application/json';file.hidden=true;
+ tools.insertBefore(btn,$('soleLogout')||null);tools.appendChild(file);
+ const panel=document.createElement('section');
+ panel.id='soleV124Panel';
+ panel.setAttribute('aria-label','Restauración de liquidaciones V124');
+ panel.style.cssText='position:fixed;top:78px;right:14px;width:min(440px,calc(100vw - 28px));z-index:2147483635;display:none;background:#fff;border:2px solid #225c75;border-radius:14px;padding:18px;color:#1b3446;font:14px/1.4 Arial,sans-serif;box-shadow:0 16px 38px #112c4640;box-sizing:border-box;';
+ panel.innerHTML='<div style="display:flex;justify-content:space-between;align-items:center;gap:8px">'
+  +'<strong style="font-size:17px">Falta restaurar las liquidaciones reales</strong>'
+  +'<button id="soleV124Close" type="button" aria-label="Cerrar aviso" style="padding:4px 9px;cursor:pointer">×</button></div>'
+  +'<p id="soleV124Count" style="margin:10px 0">La página todavía está leyendo la base anterior de Firebase.</p>'
+  +'<p style="margin:8px 0">La publicación en GitHub <b>no modifica automáticamente Firebase</b>. Para cargar los 37 expedientes de productos y 1 de cajas, importa el archivo V124 verificado.</p>'
+  +'<button id="soleV124Select" type="button" style="width:100%;background:#12546d;color:white;border:0;border-radius:9px;padding:12px 9px;font-weight:700;cursor:pointer">Seleccionar respaldo V124 y restaurar</button>'
+  +'<p style="font-size:12px;margin:9px 0 0">Se descargará una copia de la base actual antes de sustituirla. No se borrarán registros de Firebase ni archivos de GitHub.</p>'
+  +'<p id="soleV124Progress" role="status" style="font-size:12px;font-weight:bold;margin:8px 0 0"></p>';
+ document.body.appendChild(panel);
+ let dismissed=false;
+ $('soleV124Close').addEventListener('click',()=>{dismissed=true;panel.style.display='none'});
+ const requestFile=()=>{
+  if(!checkLoggedAdmin()){
+   alert('Para restaurar, debes iniciar sesión como Administrador y esperar a que Firebase termine de sincronizar.');return;
+  }
+  file.click();
+ };
+ btn.addEventListener('click',requestFile);
+ $('soleV124Select').addEventListener('click',requestFile);
  file.addEventListener('change',()=>performMigration(file.files[0],btn));
- const update=()=>{const st=window.soleV126Online?.estado;btn.style.display=(st?.rol==='Administrador'&&st?.ready)?'inline-block':'none';btn.disabled=working||!!st?.dirty||!!st?.busy||!!st?.conflict};
- update();setInterval(update,1200);
+ let wasAllowed=false;
+ const update=()=>{
+  const st=window.soleV126Online?.estado;
+  const admin=st?.rol==='Administrador'&&st?.ready;
+  const count=liveCount();
+  if(admin&&!wasAllowed)dismissed=false;
+  wasAllowed=!!admin;
+  btn.style.display=admin?'inline-block':'none';
+  btn.disabled=working||!!st?.dirty||!!st?.busy||!!st?.conflict;
+  const needsRestore= count===null?st?.cantidad<33:count!==37;
+  const show=!!admin&&needsRestore&&!dismissed;
+  panel.style.display=show?'block':'none';
+  const ct=$('soleV124Count');
+  if(ct && count!==null)ct.textContent='Liquidaciones de productos visibles: '+count+' de 37. Falta aplicar el respaldo V124 en Firebase.';
+ };
+ update();setInterval(update,1000);
 }
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',setup);else setup();
 })();
