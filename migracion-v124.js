@@ -99,44 +99,67 @@ function matchSnapshot(current,live,seedLive){
  const stable=a=>JSON.stringify(a.sort((x,y)=>x.id.localeCompare(y.id)));
  return stable(old)===stable(now)&&stable(oldSeeds)===stable(nowSeeds);
 }
+function canonicalJson(value){
+ // Orden estable de campos; los objetos Timestamp del SDK tienen toJSON().
+ if(value&&typeof value==='object'&&typeof value.toJSON==='function')
+  return canonicalJson(value.toJSON());
+ if(Array.isArray(value))return value.map(canonicalJson);
+ if(value&&typeof value==='object'){
+  const out={};
+  for(const key of Object.keys(value).sort())out[key]=canonicalJson(value[key]);
+  return out;
+ }
+ return value;
+}
+function equalData(a,b){return JSON.stringify(canonicalJson(a))===JSON.stringify(canonicalJson(b))}
+function verifyExistingHistory(current,p){
+ // El historial protegido vigente YA contiene los 48 registros. No volver a escribirlo.
+ // Los campos de metadatos añadidos por V130 (numeroOriginal, numeroProvisional)
+ // se conservan íntegros.
+ const item=current.colecciones[SEED_COLLECTION].find(d=>d.id==='HIST');
+ if(!item)throw Error('No existe el bloque HIST en el historial protegido de Firebase. Operación detenida, sin modificar datos.');
+ let old;
+ try{old=JSON.parse(item.data.json)}catch(e){throw Error('No se puede leer el historial protegido. Operación detenida.')}
+ if(!Array.isArray(old)||old.length!==p.hist.length)throw Error('El historial en Firebase difiere del respaldo V124. Operación detenida para no alterar otros datos.');
+ const keys=['claim','solped','po','file','code','unique','uniqueAmount','amount','status','supplier','observations','defect'];
+ for(let i=0;i<old.length;i++)
+  for(const key of keys)
+   if(!equalData(old[i]?.[key]??null,p.hist[i]?.[key]??null))
+    throw Error('El historial protegido no coincide: fila '+(i+1)+', campo '+key+'. No se aplicó ningún cambio.');
+}
 async function commitImport(db,p,current){
- // Se vuelven a consultar las dos colecciones para detectar cambios posteriores al respaldo.
+ verifyExistingHistory(current,p);
+ // Verificación previa contra copias frescas, sin modificar HIST ni otras bases.
  const latest=await db.collection(COLLECTION).get({source:'server'});
  const seedLatest=await db.collection(SEED_COLLECTION).get({source:'server'});
  if(!matchSnapshot(current,latest,seedLatest))
-  throw Error('Alguien modificó Firebase después del respaldo. No se sustituyó nada. Vuelve a descargar un respaldo actualizado.');
+  throw Error('Firebase cambió después de generar la copia de seguridad. No se modificó nada. Repite el respaldo para evitar pérdida de cambios.');
  const expected=new Set(p.docs.map(d=>d.claim));
  const old=current.colecciones[COLLECTION];
  const extra=old.filter(d=>!expected.has(d.id));
  const refs=[];
  for(const d of p.docs)refs.push({ref:db.collection(COLLECTION).doc(d.claim),kind:'target',payload:d});
  for(const d of extra)refs.push({ref:db.collection(COLLECTION).doc(d.id),kind:'archive',payload:d});
- const historicRef=db.collection(SEED_COLLECTION).doc('HIST');
- refs.push({ref:historicRef,kind:'hist'});
- // Transacción: todas las lecturas antes de escribir. Firestore cancela si cambió un documento.
+ // Una transacción única para que no queden registros parcialmente cargados.
+ // No toca sole_seed_privado/HIST: ya contiene el historial original correcto.
+ const now=firebase.firestore.FieldValue.serverTimestamp();
+ const revision='restaurado-v124-'+dateSuffix();
  await db.runTransaction(async tx=>{
   const before=[];
   for(const item of refs)before.push(await tx.get(item.ref));
   for(let i=0;i<refs.length;i++){
    const item=refs[i],snap=before[i];
-   const backupEntry=item.kind==='hist'
-    ? current.colecciones[SEED_COLLECTION].find(d=>d.id==='HIST')
-    : old.find(d=>d.id===item.ref.id);
-   if(!!backupEntry!==snap.exists || (snap.exists&&JSON.stringify(backupEntry.data)!==JSON.stringify(snap.data())))
-    throw Error('El registro '+item.ref.id+' cambió durante la migración. No se aplicó la transacción.');
+   const backupEntry=old.find(d=>d.id===item.ref.id);
+   if(!!backupEntry!==snap.exists || (snap.exists&&!equalData(backupEntry.data,snap.data())))
+    throw Error('El documento '+item.ref.id+' fue cambiado después de la copia. No se aplicó nada.');
   }
-  const time=firebase.firestore.FieldValue.serverTimestamp();
   for(const item of refs){
    if(item.kind==='target'){
-    tx.set(item.ref,{...toFirestore(item.payload),revision:'migracion-v124-'+dateSuffix(),
-     version:126,autor:firebase.auth().currentUser.uid,actualizado:time});
-   }else if(item.kind==='archive'){
-    // Marcado lógico: conserva íntegros los datos anteriores en Firestore.
-    // Se utiliza el campo 'eliminada' que ya admite el sistema actual.
-    tx.update(item.ref,{eliminada:true,actualizado:time});
+    tx.set(item.ref,{...toFirestore(item.payload),revision,version:126,
+      autor:firebase.auth().currentUser.uid,actualizado:now});
    }else{
-    tx.set(item.ref,{json:JSON.stringify(p.hist),formato:'sole-v124',
-      actualizado:time,autor:firebase.auth().currentUser.uid});
+    // Archivo lógico sin borrar datos originales.
+    tx.update(item.ref,{eliminada:true,actualizado:now});
    }
   }
  });
@@ -159,7 +182,7 @@ async function performMigration(file,button){
    'Registros para Firestore: '+p.docs.length+'\n\n'+
    'Primero se descargará una copia COMPLETA de las colecciones actuales. Solo después podrás confirmar la sustitución.\n\n¿Continuar?'
   );
-  if(!ok)return;
+  if(!ok){setProgress('Restauración cancelada antes de crear respaldo. Firebase quedó sin cambios.');return;}
   const auth=firebase.auth(),db=firebase.firestore(),user=auth.currentUser;
   if(!user)throw Error('Tu sesión ha expirado.');
   const userDoc=await db.collection('usuarios').doc(user.uid).get({source:'server'});
@@ -171,7 +194,7 @@ async function performMigration(file,button){
     '\n\nVerifica en Descargas que el archivo JSON se guardó correctamente y que no está vacío.\n\n'+
     'ACEPTAR: Confirmo que ya tengo el respaldo descargado y autorizo la sustitución.\n'+
     'CANCELAR: No modificar Firebase.');
-  if(!backedUp)return;
+  if(!backedUp){setProgress('Restauración cancelada después de descargar el respaldo. Firebase quedó sin cambios.');return;}
   if(!checkLoggedAdmin())throw Error('Hay cambios pendientes: migración detenida sin modificar Firebase.');
   setProgress('Copia confirmada. Sustituyendo datos en Firebase sin borrar documentos...');
   const result=await commitImport(db,p,current);
@@ -179,7 +202,15 @@ async function performMigration(file,button){
   const ids=new Set(p.docs.map(d=>d.claim));
   const unexpected=verify.docs.filter(d=>!ids.has(d.id)&&!d.data().eliminada&&!d.data().archivadoV124);
   const missing=p.docs.filter(d=>!verify.docs.some(v=>v.id===d.claim));
-  if(unexpected.length||missing.length)throw Error('La operación terminó, pero quedan diferencias: '+unexpected.length+' extras visibles, '+missing.length+' faltantes. Conserva el respaldo y comunica el problema.');
+  const bad=p.docs.filter(d=>{const got=verify.docs.find(v=>v.id===d.claim)?.data();if(!got)return false;
+    return got.eliminada!==!!d.eliminada ||
+      !equalData(got.registro,toFirestore(d).registro) ||
+      !equalData(got.edicion,toFirestore(d).edicion) ||
+      !equalData(got.compensaciones,toFirestore(d).compensaciones);
+  });
+  if(unexpected.length||missing.length||bad.length)
+   throw Error('Firebase respondió, pero hay diferencias de verificación. Extras: '+unexpected.length+', faltantes: '+missing.length+', distintos: '+bad.length+'. Conserva el respaldo y el error.');
+  setProgress('✅ Firebase confirmó los 33 documentos del respaldo. Esperando sincronización de la lista...');
   setProgress('Restauración terminada. Comprobando actualización de la página...');
   alert('Migración V124 confirmada en Firebase.\nProductos: '+p.products+' · Cajas: '+p.boxes+
     '\nDocumentos actualizados: '+result.guardados+'\nDocumentos anteriores conservados y archivados: '+result.archivados+
@@ -196,6 +227,17 @@ async function performMigration(file,button){
 function setProgress(message,isError){
  const el=$('soleV124Progress');
  if(el){el.textContent=message;el.style.color=isError?'#9b2626':'#14506b'}
+ let status=$('soleV124FixedStatus');
+ if(!status){
+  status=document.createElement('div');status.id='soleV124FixedStatus';
+  status.setAttribute('role','status');
+  status.style.cssText='position:fixed;bottom:68px;right:12px;z-index:2147483644;max-width:min(480px,calc(100vw - 24px));padding:12px 15px;border-radius:10px;background:#e8f3f8;color:#123b50;border:1px solid #a1c4d4;box-shadow:0 4px 20px #123b5033;font:13px/1.4 Arial,sans-serif;';
+  document.body.appendChild(status);
+ }
+ status.style.background=isError?'#fff1ee':'#e8f3f8';
+ status.style.color=isError?'#9b2626':'#123b50';
+ status.textContent=message;
+ status.hidden=false;
 }
 function liveCount(){
  try {return typeof productClaimData==='function'?productClaimData().length:null}
