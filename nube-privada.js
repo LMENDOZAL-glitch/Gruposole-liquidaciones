@@ -144,7 +144,7 @@
   pending=null;
   lastRemoteAt=new Date().toISOString();
   const rows=[],edit={},comps=[],deleted=new Set(),next=new Map();
-  snap.docs.forEach(d=>{const v=fromFirestore(d.data());if(!v?.claim)return;const k=norm(v.claim);next.set(k,v);if(v.eliminada){deleted.add(k);return}if(v.registro)rows.push(copy(v.registro));if(v.edicion)edit[k]=copy(v.edicion);if(Array.isArray(v.compensaciones))comps.push(...copy(v.compensaciones))});
+  snap.docs.forEach(d=>{if(d.data()?.archivadoV124)return;const v=fromFirestore(d.data());if(!v?.claim)return;const k=norm(v.claim);next.set(k,v);if(v.eliminada){deleted.add(k);return}if(v.registro)rows.push(copy(v.registro));if(v.edicion)edit[k]=copy(v.edicion);if(Array.isArray(v.compensaciones))comps.push(...copy(v.compensaciones))});
   captureRecovery(next);
   applying=true;
   try{
