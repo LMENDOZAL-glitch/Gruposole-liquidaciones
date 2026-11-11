@@ -99,71 +99,101 @@ function matchSnapshot(current,live,seedLive){
  const stable=a=>JSON.stringify(a.sort((x,y)=>x.id.localeCompare(y.id)));
  return stable(old)===stable(now)&&stable(oldSeeds)===stable(nowSeeds);
 }
-function canonicalJson(value){
- // Orden estable de campos; los objetos Timestamp del SDK tienen toJSON().
- if(value&&typeof value==='object'&&typeof value.toJSON==='function')
-  return canonicalJson(value.toJSON());
- if(Array.isArray(value))return value.map(canonicalJson);
- if(value&&typeof value==='object'){
-  const out={};
-  for(const key of Object.keys(value).sort())out[key]=canonicalJson(value[key]);
-  return out;
+function canonicalJson(v){
+ if(v&&typeof v==='object'&&typeof v.toJSON==='function')return canonicalJson(v.toJSON());
+ if(Array.isArray(v))return v.map(canonicalJson);
+ if(v&&typeof v==='object'){
+  const out={};for(const key of Object.keys(v).sort())out[key]=canonicalJson(v[key]);return out;
  }
- return value;
+ return v;
 }
 function equalData(a,b){return JSON.stringify(canonicalJson(a))===JSON.stringify(canonicalJson(b))}
+function unpackJson(v,fallback){
+ if(v&&typeof v==='object'&&!Array.isArray(v)&&Object.prototype.hasOwnProperty.call(v,FIELD)){
+  try{return JSON.parse(v[FIELD])}catch(e){return null}
+ }
+ return v==null?fallback:v;
+}
+function matchesRecord(raw,d){
+ if(!raw||claimKey(raw.claim)!==claimKey(d.claim)||!!raw.eliminada!==!!d.eliminada)return false;
+ const prevComp=Array.isArray(raw.compensaciones)&&raw.compensaciones.length===1
+  ?unpackJson(raw.compensaciones[0],[]):raw.compensaciones;
+ return equalData(unpackJson(raw.registro,null),d.registro??null)
+  &&equalData(unpackJson(raw.edicion,{}),d.edicion??{})
+  &&equalData(prevComp??[],d.compensaciones??[]);
+}
 function verifyExistingHistory(current,p){
- // El historial protegido vigente YA contiene los 48 registros. No volver a escribirlo.
- // Los campos de metadatos añadidos por V130 (numeroOriginal, numeroProvisional)
- // se conservan íntegros.
+ // El historial protegido ya fue sincronizado con el V124. No es necesario
+ // sobrescribirlo ni dejarlo expuesto en GitHub.
  const item=current.colecciones[SEED_COLLECTION].find(d=>d.id==='HIST');
- if(!item)throw Error('No existe el bloque HIST en el historial protegido de Firebase. Operación detenida, sin modificar datos.');
- let old;
- try{old=JSON.parse(item.data.json)}catch(e){throw Error('No se puede leer el historial protegido. Operación detenida.')}
- if(!Array.isArray(old)||old.length!==p.hist.length)throw Error('El historial en Firebase difiere del respaldo V124. Operación detenida para no alterar otros datos.');
+ if(!item)throw Error('Falta el historial HIST protegido en Firebase. No se cambió ningún expediente.');
+ let hist;
+ try{hist=JSON.parse(item.data.json)}catch(e){throw Error('El historial protegido HIST no se puede leer. No se cambió ningún expediente.')}
+ if(!Array.isArray(hist)||hist.length!==p.hist.length)
+  throw Error('El historial protegido no contiene las 48 filas requeridas. No se cambiaron expedientes.');
  const keys=['claim','solped','po','file','code','unique','uniqueAmount','amount','status','supplier','observations','defect'];
- for(let i=0;i<old.length;i++)
-  for(const key of keys)
-   if(!equalData(old[i]?.[key]??null,p.hist[i]?.[key]??null))
-    throw Error('El historial protegido no coincide: fila '+(i+1)+', campo '+key+'. No se aplicó ningún cambio.');
+ for(let i=0;i<hist.length;i++)for(const key of keys)
+  if(!equalData(hist[i]?.[key]??null,p.hist[i]?.[key]??null))
+   throw Error('Diferencia en historial protegido: fila '+(i+1)+' campo '+key+'. Operación detenida sin cambios.');
+}
+function planChanges(p,current){
+ verifyExistingHistory(current,p);
+ const old=current.colecciones[COLLECTION];
+ const oldMap=new Map(old.map(x=>[x.id,x.data]));
+ const expected=new Set(p.docs.map(d=>d.claim));
+ const extras=old.filter(x=>!expected.has(x.id)&&!x.data.eliminada&&!x.data.archivadoV124);
+ if(extras.length)throw Error('Firebase contiene expedientes adicionales fuera del respaldo V124: '+
+   extras.map(x=>x.id).join(', ')+'. No se sustituirán ni borrarán automáticamente.');
+ const changes=p.docs.filter(d=>!matchesRecord(oldMap.get(d.claim),d));
+ const creating=changes.filter(d=>!oldMap.has(d.claim));
+ const recovering=changes.filter(d=>oldMap.get(d.claim)?.eliminada&&!d.eliminada);
+ return {changes,creating,recovering,unchanged:p.docs.length-changes.length,oldMap};
 }
 async function commitImport(db,p,current){
- verifyExistingHistory(current,p);
- // Verificación previa contra copias frescas, sin modificar HIST ni otras bases.
- const latest=await db.collection(COLLECTION).get({source:'server'});
- const seedLatest=await db.collection(SEED_COLLECTION).get({source:'server'});
- if(!matchSnapshot(current,latest,seedLatest))
-  throw Error('Firebase cambió después de generar la copia de seguridad. No se modificó nada. Repite el respaldo para evitar pérdida de cambios.');
- const expected=new Set(p.docs.map(d=>d.claim));
- const old=current.colecciones[COLLECTION];
- const extra=old.filter(d=>!expected.has(d.id));
- const refs=[];
- for(const d of p.docs)refs.push({ref:db.collection(COLLECTION).doc(d.claim),kind:'target',payload:d});
- for(const d of extra)refs.push({ref:db.collection(COLLECTION).doc(d.id),kind:'archive',payload:d});
- // Una transacción única para que no queden registros parcialmente cargados.
- // No toca sole_seed_privado/HIST: ya contiene el historial original correcto.
- const now=firebase.firestore.FieldValue.serverTimestamp();
- const revision='restaurado-v124-'+dateSuffix();
- await db.runTransaction(async tx=>{
-  const before=[];
-  for(const item of refs)before.push(await tx.get(item.ref));
-  for(let i=0;i<refs.length;i++){
-   const item=refs[i],snap=before[i];
-   const backupEntry=old.find(d=>d.id===item.ref.id);
-   if(!!backupEntry!==snap.exists || (snap.exists&&!equalData(backupEntry.data,snap.data())))
-    throw Error('El documento '+item.ref.id+' fue cambiado después de la copia. No se aplicó nada.');
+ const plan=planChanges(p,current);
+ // Los datos del navegador no se publican en GitHub; se envían a Firestore
+ // usando la sesión de Administrador y los mismos campos que el guardado normal.
+ // Una transacción POR EXPEDIENTE evita la denegación de una transacción grande
+ // en reglas con límite de lecturas (auth/usuarios).
+ const currentUser=firebase.auth().currentUser;
+ if(!currentUser)throw Error('La sesión ha expirado; no se cambió el expediente en curso.');
+ const time=firebase.firestore.FieldValue.serverTimestamp;
+ let confirmed=0,created=0,recovered=0;
+ for(const d of plan.changes){
+  if(!checkLoggedAdmin())throw Error('La sesión o el estado de sincronización cambió. No se modificaron los expedientes restantes.');
+  const ref=db.collection(COLLECTION).doc(d.claim);
+  const baseline=plan.oldMap.get(d.claim);
+  // Firestore transaction reintenta de forma segura si otro usuario cambió
+  // el documento. Siempre se comprueba la versión concreta respaldada.
+  try{
+   await db.runTransaction(async tx=>{
+    const snap=await tx.get(ref);
+    const live=snap.exists?snap.data():null;
+    if(matchesRecord(live,d))return; // recuperación reanudable e idempotente
+    if((!baseline&&snap.exists)||(baseline&&!snap.exists)
+       ||(baseline&&!equalData(live,baseline))){
+      const e=Error('El expediente '+d.claim+' fue modificado por otro usuario desde el respaldo. Se detuvo la carga sin sobrescribir esos cambios.');
+      e.code='sole/concurrent-change';throw e;
+    }
+    const revision='restore-v124-'+dateSuffix();
+    tx.set(ref,{...toFirestore(d),revision,version:126,autor:currentUser.uid,actualizado:time()});
+   });
+   const checked=await ref.get({source:'server'});
+   if(!checked.exists||!matchesRecord(checked.data(),d))
+    throw Error('La escritura de '+d.claim+' no coincide con el respaldo V124 al leer Firebase.');
+   confirmed++;
+   if(!baseline)created++;
+   if(baseline?.eliminada&&!d.eliminada)recovered++;
+   setProgress('Restaurados '+confirmed+' de '+plan.changes.length+' expedientes. Actual: '+d.claim);
+  }catch(e){
+   const error=Error('RESTAURACIÓN PARCIAL: '+confirmed+' de '+plan.changes.length+
+    ' expedientes confirmados. Falló '+d.claim+
+    ' ('+(e.code||'sin código')+'): '+(e.message||e)+
+    '. La copia anterior ya está descargada. Puedes volver a iniciar la misma restauración: se omitirán los expedientes correctos.');
+   error.code=e.code;throw error;
   }
-  for(const item of refs){
-   if(item.kind==='target'){
-    tx.set(item.ref,{...toFirestore(item.payload),revision,version:126,
-      autor:firebase.auth().currentUser.uid,actualizado:now});
-   }else{
-    // Archivo lógico sin borrar datos originales.
-    tx.update(item.ref,{eliminada:true,actualizado:now});
-   }
-  }
- });
- return {guardados:p.docs.length,archivados:extra.length};
+ }
+ return {guardados:confirmed,archivados:0,creados:created,recuperados:recovered,omitidos:plan.unchanged};
 }
 async function performMigration(file,button){
  if(working||!file)return;
@@ -173,51 +203,42 @@ async function performMigration(file,button){
   setProgress('Validando que el archivo contiene exactamente las liquidaciones reales...');
   if(file.size>3500000)throw Error('El archivo seleccionado es demasiado grande.');
   const p=preflight(JSON.parse(await file.text()));
-  const ok=confirm(
-   'VALIDACIÓN DEL RESPALDO V124\n\n'+
-   'Liquidaciones de productos: '+p.products+'\n'+
-   'Liquidaciones de cajas: '+p.boxes+'\n'+
-   'Total solicitado (USD): '+p.sum.toFixed(2)+'\n'+
-   'Total recuperado (USD): '+p.rec.toFixed(2)+'\n'+
-   'Registros para Firestore: '+p.docs.length+'\n\n'+
-   'Primero se descargará una copia COMPLETA de las colecciones actuales. Solo después podrás confirmar la sustitución.\n\n¿Continuar?'
-  );
-  if(!ok){setProgress('Restauración cancelada antes de crear respaldo. Firebase quedó sin cambios.');return;}
   const auth=firebase.auth(),db=firebase.firestore(),user=auth.currentUser;
   if(!user)throw Error('Tu sesión ha expirado.');
   const userDoc=await db.collection('usuarios').doc(user.uid).get({source:'server'});
   if(userDoc.data()?.rol!=='Administrador')throw Error('Tu cuenta ya no tiene permisos de administrador.');
   setProgress('Descargando copia completa de los datos actuales de Firebase...');
   const current=await retrieveCurrent(db);
+  const changesPreview=planChanges(p,current);
   const name=saveBackup(current);
-  const backedUp=confirm('RESPALDO OBLIGATORIO\n\nSe solicitó descargar:\n'+name+
+  const backedUp=confirm('ARCHIVO VALIDADO: '+p.products+' liquidaciones de producto, '+p.boxes+' de cajas.'+
+    '\nActualmente necesitan cambios '+changesPreview.changes.length+' de '+p.docs.length+' documentos:'+
+    '\nNuevos: '+changesPreview.creating.length+' · Recuperados: '+changesPreview.recovering.length+
+    ' · Ya correctos: '+changesPreview.unchanged+
+    '\nSolicitado: USD '+p.sum.toFixed(2)+' · Recuperado: USD '+p.rec.toFixed(2)+
+    '\n\nRESPALDO OBLIGATORIO\n\nSe solicitó descargar:\n'+name+
     '\n\nVerifica en Descargas que el archivo JSON se guardó correctamente y que no está vacío.\n\n'+
     'ACEPTAR: Confirmo que ya tengo el respaldo descargado y autorizo la sustitución.\n'+
     'CANCELAR: No modificar Firebase.');
   if(!backedUp){setProgress('Restauración cancelada después de descargar el respaldo. Firebase quedó sin cambios.');return;}
   if(!checkLoggedAdmin())throw Error('Hay cambios pendientes: migración detenida sin modificar Firebase.');
-  setProgress('Copia confirmada. Sustituyendo datos en Firebase sin borrar documentos...');
+  setProgress('Respaldo confirmado. Restaurando solo los expedientes que faltan o difieren...');
   const result=await commitImport(db,p,current);
   const verify=await db.collection(COLLECTION).get({source:'server'});
   const ids=new Set(p.docs.map(d=>d.claim));
   const unexpected=verify.docs.filter(d=>!ids.has(d.id)&&!d.data().eliminada&&!d.data().archivadoV124);
   const missing=p.docs.filter(d=>!verify.docs.some(v=>v.id===d.claim));
-  const bad=p.docs.filter(d=>{const got=verify.docs.find(v=>v.id===d.claim)?.data();if(!got)return false;
-    return got.eliminada!==!!d.eliminada ||
-      !equalData(got.registro,toFirestore(d).registro) ||
-      !equalData(got.edicion,toFirestore(d).edicion) ||
-      !equalData(got.compensaciones,toFirestore(d).compensaciones);
-  });
+  const bad=p.docs.filter(d=>!matchesRecord(verify.docs.find(v=>v.id===d.claim)?.data(),d));
   if(unexpected.length||missing.length||bad.length)
    throw Error('Firebase respondió, pero hay diferencias de verificación. Extras: '+unexpected.length+', faltantes: '+missing.length+', distintos: '+bad.length+'. Conserva el respaldo y el error.');
-  setProgress('✅ Firebase confirmó los 33 documentos del respaldo. Esperando sincronización de la lista...');
-  setProgress('Restauración terminada. Comprobando actualización de la página...');
+  setProgress('✅ Firebase confirmó los 33 documentos y el historial de 48 filas. Actualizando la vista...');
   alert('Migración V124 confirmada en Firebase.\nProductos: '+p.products+' · Cajas: '+p.boxes+
-    '\nDocumentos actualizados: '+result.guardados+'\nDocumentos anteriores conservados y archivados: '+result.archivados+
+    '\nDocumentos restaurados: '+result.guardados+' · nuevos: '+result.creados+
+    ' · recuperados: '+result.recuperados+' · ya correctos: '+result.omitidos+
     '\nNo se borró ningún documento.\nLa página se actualizará con la sincronización en vivo.');
  }catch(e){
   setProgress('No se aplicó la restauración: '+(e.message||e),true);
-  alert('NO SE COMPLETÓ LA MIGRACIÓN: '+(e.message||e)+'\nRevisa el estado antes de volver a intentarlo.');
+  alert('NO SE COMPLETÓ LA RESTAURACIÓN V124: '+(e.message||e)+'\nEl respaldo de Firebase se mantiene en Descargas.');
   console.error('Migración V124:',e);
  }finally{
   working=false;button.disabled=false;
@@ -249,7 +270,7 @@ function setup(){
  if(!tools)return;
  const btn=document.createElement('button');
  btn.id='soleV124Import';btn.type='button';
- btn.textContent='Importar 37 liquidaciones reales V124';
+ btn.textContent='Restaurar 37 reales · V124';
  btn.title='Respaldo obligatorio antes de restaurar las liquidaciones reales';
  btn.style.cssText='background:#124d64;color:#fff;border:1px solid #87aab7;border-radius:6px;padding:8px 11px;cursor:pointer;';
  const file=document.createElement('input');
@@ -260,7 +281,7 @@ function setup(){
  panel.setAttribute('aria-label','Restauración de liquidaciones V124');
  panel.style.cssText='position:fixed;top:78px;right:14px;width:min(440px,calc(100vw - 28px));z-index:2147483635;display:none;background:#fff;border:2px solid #225c75;border-radius:14px;padding:18px;color:#1b3446;font:14px/1.4 Arial,sans-serif;box-shadow:0 16px 38px #112c4640;box-sizing:border-box;';
  panel.innerHTML='<div style="display:flex;justify-content:space-between;align-items:center;gap:8px">'
-  +'<strong style="font-size:17px">Falta restaurar las liquidaciones reales</strong>'
+  +'<strong style="font-size:17px">Restauración protegida de las liquidaciones</strong>'
   +'<button id="soleV124Close" type="button" aria-label="Cerrar aviso" style="padding:4px 9px;cursor:pointer">×</button></div>'
   +'<p id="soleV124Count" style="margin:10px 0">La página todavía está leyendo la base anterior de Firebase.</p>'
   +'<p style="margin:8px 0">La publicación en GitHub <b>no modifica automáticamente Firebase</b>. Para cargar los 37 expedientes de productos y 1 de cajas, importa el <b>JSON original V124 de aprox. 413 KB</b>, no el JSON de respaldo de Firebase de aprox. 236 KB.</p>'
