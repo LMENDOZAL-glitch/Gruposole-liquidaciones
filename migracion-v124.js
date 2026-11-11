@@ -25,7 +25,8 @@ function toFirestore(d){
  };
 }
 function preflight(p){
- if(!p || p.formato!==EXPECTED_FORMAT)throw Error('Usa el archivo SOLE_V124_REEMPLAZO_FIREBASE_PRIVADO_VERIFICADO.json, sin modificar.');
+ if(p?.formato==='sole-firestore-respaldo-completo-antes-v124-v1')throw Error('ARCHIVO EQUIVOCADO: seleccionaste la COPIA DE SEGURIDAD descargada de Firebase. Ese archivo conserva los datos anteriores y NO contiene las 37 liquidaciones originales. Debes seleccionar el JSON de restauración V124 original (aproximadamente 413 KB), no el de respaldo de Firebase (aproximadamente 236 KB). Aunque ambos tengan el mismo nombre, son archivos distintos. No se modificó Firebase.');
+ if(!p || p.formato!==EXPECTED_FORMAT)throw Error('Archivo no válido: el respaldo correcto debe empezar con "formato": "sole-v124-reemplazo-firebase-exacto-v1". No se modificó Firebase.');
  const hist=p.historico, docs=p.documentosFirebase, summary=p.resumen;
  if(!Array.isArray(hist)||!Array.isArray(docs)||!summary)throw Error('El archivo no incluye todas las secciones requeridas.');
  if(hist.length!==summary.filasHistoricas||docs.length!==summary.registrosFirebase)throw Error('La cantidad de registros del archivo no coincide con su resumen.');
@@ -206,7 +207,7 @@ function setup(){
  if(!tools)return;
  const btn=document.createElement('button');
  btn.id='soleV124Import';btn.type='button';
- btn.textContent='Restaurar 37 liquidaciones V124';
+ btn.textContent='Importar 37 liquidaciones reales V124';
  btn.title='Respaldo obligatorio antes de restaurar las liquidaciones reales';
  btn.style.cssText='background:#124d64;color:#fff;border:1px solid #87aab7;border-radius:6px;padding:8px 11px;cursor:pointer;';
  const file=document.createElement('input');
@@ -220,9 +221,9 @@ function setup(){
   +'<strong style="font-size:17px">Falta restaurar las liquidaciones reales</strong>'
   +'<button id="soleV124Close" type="button" aria-label="Cerrar aviso" style="padding:4px 9px;cursor:pointer">×</button></div>'
   +'<p id="soleV124Count" style="margin:10px 0">La página todavía está leyendo la base anterior de Firebase.</p>'
-  +'<p style="margin:8px 0">La publicación en GitHub <b>no modifica automáticamente Firebase</b>. Para cargar los 37 expedientes de productos y 1 de cajas, importa el archivo V124 verificado.</p>'
-  +'<button id="soleV124Select" type="button" style="width:100%;background:#12546d;color:white;border:0;border-radius:9px;padding:12px 9px;font-weight:700;cursor:pointer">Seleccionar respaldo V124 y restaurar</button>'
-  +'<p style="font-size:12px;margin:9px 0 0">Se descargará una copia de la base actual antes de sustituirla. No se borrarán registros de Firebase ni archivos de GitHub.</p>'
+  +'<p style="margin:8px 0">La publicación en GitHub <b>no modifica automáticamente Firebase</b>. Para cargar los 37 expedientes de productos y 1 de cajas, importa el <b>JSON original V124 de aprox. 413 KB</b>, no el JSON de respaldo de Firebase de aprox. 236 KB.</p>'
+  +'<button id="soleV124Select" type="button" style="width:100%;background:#12546d;color:white;border:0;border-radius:9px;padding:12px 9px;font-weight:700;cursor:pointer">Elegir archivo original V124 (413 KB)</button>'
+  +'<p style="font-size:12px;margin:9px 0 0"><b>Identificación segura:</b> el archivo original incluye un bloque "resumen" con "productosDespuesDeSepararSN": 37. El archivo que se descarga durante la copia de seguridad dice "sole-firestore-respaldo-completo-antes-v124-v1". Se descargará una copia de la base actual antes de sustituirla. No se borrarán registros de Firebase ni archivos de GitHub.</p>'
   +'<p id="soleV124Progress" role="status" style="font-size:12px;font-weight:bold;margin:8px 0 0"></p>';
  document.body.appendChild(panel);
  let dismissed=false;
