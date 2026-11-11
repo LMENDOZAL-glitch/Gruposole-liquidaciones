@@ -6001,6 +6001,9 @@ body.ui-v126 .q129-state option{background:var(--u-surface,#fff);color:var(--u-i
 #n130Panel{z-index:100109;top:50%;right:24px;transform:translateY(-50%);max-height:calc(100dvh - 50px)}
 #n130Summary{font-weight:600;margin:18px 0 8px}.n130-connect{font-size:11px;color:var(--u-muted);margin:0 0 14px}
 #n130Dismiss{margin-top:14px}
+#n130BackToList[hidden]{display:none!important}
+#n130BackToList:focus-visible{outline:3px solid #ffbf47;outline-offset:3px}
+@media(max-width:650px){#n130BackToList{bottom:90px!important;right:10px!important;left:10px!important}}
 @media(max-width:650px){#n130Panel{top:50%;right:14px;max-height:calc(100dvh - 35px)}}
 </style>
 <script id="notificationScript">
@@ -6009,7 +6012,7 @@ body.ui-v126 .q129-state option{background:var(--u-surface,#fff);color:var(--u-i
  'use strict';
  const $=id=>document.getElementById(id);
  const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
- let records=[],shownAtOpening=false,refreshTimer=null;
+ let records=[],shownAtOpening=false,refreshTimer=null,selectionBefore=null;
  const today=()=>new Intl.DateTimeFormat('en-CA',{timeZone:'America/Lima',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
  function dateKey(value){
   const v=String(value||'').trim();
@@ -6064,7 +6067,7 @@ body.ui-v126 .q129-state option{background:var(--u-surface,#fff);color:var(--u-i
     (proc.length?proc.map(item).join(''):'<p class="n130-empty">No hay liquidaciones en proceso para revisar.</p>')+
     `<h3 class="n130-section">PENDIENTES · Primer correo aún no enviado (${pend.length})</h3>`+
     (pend.length?pend.map(item).join(''):'<p class="n130-empty">No hay liquidaciones pendientes de primer envío.</p>')+
-    '<p class="n130-note">Cada grupo está ordenado de la fecha más antigua a la más reciente. Las concluidas no aparecen. Avisos internos: no se enviará ningún correo.</p>';
+    '<p class="n130-note">Abrir un aviso no lo marca como resuelto ni modifica su estado. Si necesitas regresar, utiliza <b>Volver a avisos / Deshacer selección</b>. No se envía ningún correo.</p>';
   const boot=$('soleNubeBoot');
   $('n130Connection').textContent=boot&&!boot.hidden?'Sincronización en curso: los avisos podrían actualizarse al conectar.':'Datos disponibles en esta sesión. Los cambios sincronizados se reflejan automáticamente.';
  }
@@ -6077,15 +6080,39 @@ body.ui-v126 .q129-state option{background:var(--u-surface,#fff);color:var(--u-i
   refresh();$('n130Panel').hidden=false;$('n130Shade').hidden=false;
   $('n130Button').setAttribute('aria-expanded','true');
  }
+ const noticeFields=['claimSearch','claimSupplier','claimStatus','claimBrand','claimYear','claimRecoveryYear'];
+ function undoSelection(){
+  const prev=selectionBefore;
+  selectionBefore=null;
+  if(typeof closeModal==='function')closeModal();
+  const back=$('n130BackToList');if(back)back.hidden=true;
+  if(prev){
+   try{
+    if(prev.page && typeof go==='function')go(prev.page);
+    if(prev.mode && typeof setClaimView==='function')setClaimView(prev.mode);
+    for(const [id,value] of Object.entries(prev.fields))if($(id))$(id).value=value;
+    if(typeof renderClaims==='function')renderClaims();
+   }catch(e){console.warn('No se pudo restaurar algún filtro visual',e)}
+  }
+  open();
+ }
  function jump(i){
   const r=records[i];if(!r)return;
+  selectionBefore={
+   page:document.querySelector('.page.active')?.id||'claims',
+   mode:typeof claimViewMode!=='undefined'?claimViewMode:'PRODUCTO',
+   fields:Object.fromEntries(noticeFields.map(id=>[id,$(id)?.value||'']))
+  };
   close();
   if(typeof v117Seguimiento==='function')v117Seguimiento(r.scope);
-  for(const id of ['claimSearch','claimSupplier','claimStatus','claimBrand','claimYear','claimRecoveryYear'])if($(id))$(id).value='';
+  for(const id of noticeFields)if($(id))$(id).value='';
   if($('claimSearch'))$('claimSearch').value=r.claim==='S/N'?r.supplier:r.claim;
   if(typeof renderClaims==='function')renderClaims();
   if(typeof soleSetView==='function')soleSetView('list');
-  if(r.claim!=='S/N'&&typeof openTrackingModalV73==='function')setTimeout(()=>openTrackingModalV73(r.claim),250);
+  if(r.claim!=='S/N'&&typeof openTrackingModalV73==='function')setTimeout(()=>{
+   if(selectionBefore)openTrackingModalV73(r.claim);
+  },250);
+  const back=$('n130BackToList');if(back)back.hidden=false;
  }
  function init(){
   if($('n130Button'))return;
@@ -6094,6 +6121,11 @@ body.ui-v126 .q129-state option{background:var(--u-surface,#fff);color:var(--u-i
   const button=document.createElement('button');button.id='n130Button';button.type='button';button.setAttribute('aria-controls','n130Panel');button.setAttribute('aria-expanded','false');
   button.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg><span>Avisos</span><b id="n130Count">0</b>';
   top.prepend(button);
+  const back=document.createElement('button');back.id='n130BackToList';back.type='button';back.hidden=true;
+  back.textContent='↶ Volver a avisos / Deshacer selección';
+  back.title='Regresa a la lista de avisos y recupera los filtros anteriores. No modifica la liquidación.';
+  back.style.cssText='position:fixed;right:18px;bottom:76px;z-index:2147483639;border:1px solid #84b4c9;border-radius:10px;background:#14506c;color:#fff;padding:11px 15px;box-shadow:0 8px 26px #102d4950;font:600 13px Segoe UI,Arial,sans-serif;cursor:pointer;max-width:calc(100vw - 36px)';
+  document.body.append(back);back.addEventListener('click',undoSelection);
   const shade=document.createElement('div');shade.id='n130Shade';shade.hidden=true;document.body.append(shade);
   const panel=document.createElement('section');panel.id='n130Panel';panel.hidden=true;panel.setAttribute('role','dialog');panel.setAttribute('aria-label','Liquidaciones que necesitan atención');
   panel.innerHTML='<div class="n130-head"><div><h2 id="n130Title">Liquidaciones por revisar</h2><small>Aviso al abrir la aplicación · Sin correos automáticos</small></div><button id="n130Close" type="button" aria-label="Cerrar avisos">×</button></div><p id="n130Summary" aria-live="polite"></p><p class="n130-connect" id="n130Connection"></p><div id="n130List"></div><button type="button" class="n130-secondary" id="n130Dismiss">Cerrar avisos</button>';
@@ -6332,5 +6364,5 @@ body.ui-v126 .q129-state option{background:var(--u-surface,#fff);color:var(--u-i
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
 <script src="firebase-config.js"></script>
 <script src="nube-privada.js"></script>
-<script src="migracion-v124.js?v=20261111-restore13"></script>
+<!-- Restauración V124 completada: importador retirado de la interfaz. Se conserva el módulo en el repositorio para respaldo. -->
 </body></html>
