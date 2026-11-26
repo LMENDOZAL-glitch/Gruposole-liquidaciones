@@ -533,6 +533,74 @@
    window.__soleCorreccionCobroProducto=true;
  }
 
+
+ // Edición de costos de liquidaciones antiguas con datos completos restaurados.
+ // El modo CALCULADO no debe perder un costo de reproceso documentado
+ // simplemente porque las horas/insumos anteriores no existían en la ficha web.
+ function habilitarDesgloseHistorico(){
+  if(window.__soleDesgloseHistoricoV2||typeof window.editProductClaimFull!=='function'
+     ||typeof window.pcManualReworkCosts!=='function')return;
+  let actual=null;
+  const prevEdit=window.editProductClaimFull;
+  const prevNew=window.newProductClaim;
+  const prevRework=window.pcManualReworkCosts;
+  const refresh=()=>{try{if(typeof calcProductClaim==='function')calcProductClaim(false)}catch(e){console.warn('Cálculo histórico',e)}};
+  function removeControl(){
+   const el=$('soleReworkDocumentedControl');if(el)el.remove();
+  }
+  window.editProductClaimFull=function(claim){
+   actual=null;removeControl();
+   const c=typeof claimDataByNo==='function'?claimDataByNo(claim):null;
+   const documented=Number(c?.reworkChargeTotal ?? c?.builderSnapshot?.reworkChargeTotal);
+   const result=prevEdit.apply(this,arguments);
+   if(String(claim).trim().toUpperCase()!=='2026-018'
+        ||!Number.isFinite(documented)||documented<=0)return result;
+   actual={claim:'2026-018',documented};
+   const anchor=$('pcReworkCostRows')?.closest('table');
+   const parent=anchor?.parentElement||$('pcCostCard');
+   if(parent){
+     const div=document.createElement('div');div.id='soleReworkDocumentedControl';
+     div.style.cssText='padding:10px 14px;margin:8px 0;border:1px solid #bbd1df;border-radius:10px;background:#f1f8fc;color:#21485d;font:13px Segoe UI,Arial,sans-serif';
+     const label=document.createElement('label');
+     label.style.cssText='display:flex;align-items:center;gap:8px;font-size:13px;font-weight:700;color:#21485d';
+     const chk=document.createElement('input');chk.type='checkbox';chk.checked=true;chk.id='soleReworkDocumentedCheck';
+     chk.style.cssText='width:18px;height:18px;flex:none;margin:0';
+     const span=document.createElement('span');span.textContent='Usar costo de reproceso documentado: USD '+documented.toFixed(2);
+     label.append(chk,span);div.appendChild(label);
+     const small=document.createElement('p');small.style.cssText='font-size:11px;margin:6px 0 0;color:#567285';
+     small.textContent='Desactiva la casilla si deseas calcular el reproceso desde las horas, operarios e insumos actuales. El cobro de productos es independiente.';
+     div.appendChild(small);parent.appendChild(div);
+     chk.addEventListener('change',refresh);
+   }
+   refresh();
+   return result;
+  };
+  if(typeof prevNew==='function')window.newProductClaim=function(){
+    actual=null;removeControl();return prevNew.apply(this,arguments);
+  };
+  window.pcManualReworkCosts=function(){
+    const normal=prevRework.apply(this,arguments);
+    const check=$('soleReworkDocumentedCheck');
+    if(!actual||$('pcClaimNo')?.value?.trim().toUpperCase()!==actual.claim||!check?.checked
+       ||$('pcAmountMode')?.value==='ANTERIOR')return normal;
+    // Conservar las partidas existentes, indicando el ajuste pendiente entre
+    // el cálculo nuevo y el documento histórico; NO inventar sus partidas.
+    const documented=actual.documented,diff=documented-(+normal.totalUsd||0);
+    const fx=+$('pcFx')?.value||+cfg.fx||1;
+    if(Math.abs(diff)>.0001){
+      normal.rows=[...normal.rows,[
+        'Conciliación con reproceso documentado',
+        'Diferencia entre el cálculo actual y el importe conservado en el expediente',
+        diff*fx,diff
+      ]];
+    }
+    normal.totalUsd=documented;
+    normal.totalPen=normal.rows.reduce((sum,row)=>sum+(+row[2]||0),0);
+    return normal;
+  };
+  window.__soleDesgloseHistoricoV2=true;
+ }
+
  function wireControls(){
   $('soleLoginForm').addEventListener('submit',async e=>{
    e.preventDefault();
@@ -569,6 +637,7 @@
   auth.setPersistence(firebase.auth.Auth.Persistence.SESSION).catch(e=>console.warn('Persistencia:',e));
   wireControls();
   habilitarCorreccionCobroProducto();
+  habilitarDesgloseHistorico();
   auth.onAuthStateChanged(authChanged,e=>showProblem('Error Firebase Auth: '+e.message));
   window.soleV126Online={get estado(){return{ready,acceso:'privado_corporativo',rol:role,email:user?.email||null,dirty,busy,conflict,error:syncError,cambiosRemotosEnEspera:!!pending,cantidad:saved.size,ultimaRecepcion:lastRemoteAt}},guardar:()=>{dirty=true;return upload()}};
  }catch(e){showProblem('Error de inicialización: '+e.message)}
