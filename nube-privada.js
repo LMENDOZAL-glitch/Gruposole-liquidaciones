@@ -390,15 +390,18 @@
  function soleLeerLiteralV124(html,nombre){
    const m=new RegExp('\\b'+nombre+'\\s*=\\s*([\\[{])').exec(html);
    if(!m)throw Error('No existe la base '+nombre+' dentro de este HTML.');
-   const i=m.index+m[0].length-1,opening=html[i],closing=opening==='['?']':'}';
-   let depth=0,quoted=false,slash=false;
+   const i=m.index+m[0].length-1;
+   const stack=[];let quoted=false,slash=false;
    for(let j=i;j<html.length;j++){
      const c=html[j];
      if(quoted){if(slash)slash=false;else if(c==='\\')slash=true;else if(c==='"')quoted=false;continue}
      if(c==='"'){quoted=true;continue}
-     if(c===opening)depth++;
-     if(c===closing&&!--depth)return JSON.parse(html.slice(i,j+1));
-     if(c===closing)depth++;
+     if(c==='{'||c==='['){stack.push(c);continue}
+     if(c==='}'||c===']'){
+       const opening=stack.pop();
+       if((c==='}'&&opening!=='{')||(c===']'&&opening!=='['))throw Error('Estructura inesperada en '+nombre);
+       if(!stack.length)return JSON.parse(html.slice(i,j+1));
+     }
    }
    throw Error('No se pudo leer el bloque '+nombre);
  }
