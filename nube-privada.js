@@ -506,99 +506,105 @@
  }
  // Las fichas antiguas tienen un total histórico manual que antes ignoraba el checkbox COBRAR PRODUCTO.
  // Al cambiar el concepto, preservar el costo restante y descontar solamente el subtotal de producto.
- function habilitarCorreccionCobroProducto(){
-   if(window.__soleCorreccionCobroProducto||typeof window.pcUpdateAction!=='function')return;
-   const previa=window.pcUpdateAction;
-   window.pcUpdateAction=function(i,k,on){
-     if(k!=='chargeProduct')return previa(i,k,on);
-     const legacy=$('pcAmountMode')?.value==='ANTERIOR';
-     const prevTotal=+($('pcLegacyAmount')?.value||0);
-     const totalProductos=()=>productClaimLines.reduce((a,l)=>a+pcLineSubtotal(l),0);
-     const antes=legacy?totalProductos():0;
-     const result=previa(i,k,on);
-     if(legacy){
-       const despues=totalProductos(),delta=despues-antes;
-       if(Math.abs(delta)>0.0001){
-         const nuevo=Math.max(0,prevTotal+delta);
-         if($('pcLegacyAmount'))$('pcLegacyAmount').value=nuevo.toFixed(2);
-         if($('pcLegacyAmountQuick'))$('pcLegacyAmountQuick').value=nuevo.toFixed(2);
-         window.pcEditingSavedAmount=nuevo;
-         calcProductClaim(false);
-       }else if(!on){
-         alert('No se puede descontar el producto porque faltan cantidades o precios en esta ficha histórica. Primero recupera sus series y repuestos usando el respaldo original; no se modificó el importe.');
-       }
+
+ // Cálculo dirigido para la liquidación 2026-018:
+ // al desactivar el formato anterior, TOTAL = saldo histórico no-producto
+ // + cobro de los productos que permanezcan seleccionados.
+ // El saldo se obtiene del expediente real guardado en Firebase, nunca
+ // de importes publicados dentro de GitHub.
+ function habilitarCalculoHistorico018(){
+   if(window.__soleCalculoHistorico018 || typeof window.editProductClaimFull!=='function'
+      || typeof window.pcManualReworkCosts!=='function')return;
+   const previousEdit=window.editProductClaimFull;
+   const previousNew=window.newProductClaim;
+   const previousRework=window.pcManualReworkCosts;
+   let active=null;
+   const round2=x=>Math.round((Number(x)||0)*100)/100;
+   const current=()=>{
+     if(!active)return null;
+     if(String($('pcClaimNo')?.value||'').trim().toUpperCase()!=='2026-018')return null;
+     return active;
+   };
+   const recalc=()=>{if(typeof window.calcProductClaim==='function')window.calcProductClaim(false)};
+   function eraseInfo(){
+     $('sole018HistoricalBalance')?.remove();
+     active=null;
+   }
+   function productSubtotal(){
+     return round2(productClaimLines.reduce((sum,l)=>sum+(Number(pcLineSubtotal(l))||0),0));
+   }
+   window.pcManualReworkCosts=function(){
+     const normal=previousRework.apply(this,arguments);
+     const ctx=current();
+     if(!ctx || $('pcAmountMode')?.value==='ANTERIOR'
+        || $('sole018UseBalance')?.checked===false)return normal;
+     const storage=productClaimLines.reduce((sum,line)=>{
+       normalizeProductActions(line);
+       return sum+(line.chargeStorage?(Number(line.storageUsd)||0):0);
+     },0);
+     const extra=Number($('pcExtraUsd')?.value)||0;
+     // El saldo histórico ya incluye todos los conceptos distintos al producto.
+     // Evita sumar almacenaje/otros conceptos dos veces.
+     const target=round2(Math.max(0,ctx.nonProductBalance-storage-extra));
+     const previous=Number(normal.totalUsd)||0;
+     const diff=round2(target-previous);
+     if(Math.abs(diff)>=0.005){
+       const fx=Number($('pcFx')?.value)||Number(cfg.fx)||1;
+       const line=['Conciliación de costo histórico 2026-018',
+         'Saldo del importe original menos cobro por productos; sin modificar partidas originales',
+         round2(diff*fx),diff];
+       normal.rows=[...(normal.rows||[]),line];
      }
+     normal.totalUsd=target;
+     normal.totalPen=round2((normal.rows||[]).reduce((sum,row)=>sum+(Number(row[2])||0),0));
+     return normal;
+   };
+   window.editProductClaimFull=function(claim){
+     eraseInfo();
+     const record=typeof claimDataByNo==='function'?claimDataByNo(claim):null;
+     const result=previousEdit.apply(this,arguments);
+     if(String(claim||'').trim().toUpperCase()!=='2026-018'||!record)return result;
+     const savedAmount=Number(record.amount);
+     const product=productSubtotal();
+     const previouslyComputed=Number(record.reworkChargeTotal);
+     if(!Number.isFinite(savedAmount)||savedAmount<0){
+       console.warn('No se pudo calcular el saldo de 2026-018 sin un monto guardado');
+       return result;
+     }
+     // Después de guardar en modo calculado, reworkChargeTotal se conserva.
+     // Antes del primer guardado, el saldo se obtiene del monto histórico
+     // porque la ficha técnica antigua no reproducía los gastos del expediente.
+     const matched=!record.oldFormat && Number.isFinite(previouslyComputed)
+       && previouslyComputed>=0 && Math.abs(savedAmount-product-previouslyComputed)<0.03;
+     const base=round2(matched?previouslyComputed:Math.max(0,savedAmount-product));
+     active={nonProductBalance:base,sourceAmount:savedAmount};
+     const anchor=$('pcReworkCostRows')?.closest('table')||$('pcCostCard');
+     if(anchor && anchor.parentNode){
+       const panel=document.createElement('div');
+       panel.id='sole018HistoricalBalance';
+       panel.style.cssText='margin:12px 0;padding:12px;border:1px solid #c5dce8;border-radius:12px;background:#f0f8fc;color:#183e53;font:13px Segoe UI,Arial,sans-serif';
+       const label=document.createElement('label');
+       label.style.cssText='display:flex;align-items:center;gap:9px;font-weight:700;font-size:13px;color:#183e53';
+       const checkbox=document.createElement('input');checkbox.type='checkbox';
+       checkbox.id='sole018UseBalance';checkbox.checked=true;
+       checkbox.style.cssText='width:18px;height:18px;margin:0;flex:none';
+       const caption=document.createElement('span');
+       caption.textContent='Mantener saldo de reproceso histórico: USD '+base.toFixed(2);
+       label.append(checkbox,caption);
+       const info=document.createElement('div');
+       info.style.cssText='font-size:11px;color:#536e81;margin-top:7px;line-height:1.4';
+       info.textContent='Es el importe vigente de esta liquidación menos los productos cobrados originalmente. Desmarcar «Cobrar producto» descuenta ese producto y conserva este saldo. Si desactivas esta opción, utilizarás únicamente los costos recalculados con las tablas actuales.';
+       panel.append(label,info);
+       anchor.insertAdjacentElement('afterend',panel);
+       checkbox.addEventListener('change',recalc);
+     }
+     recalc();
      return result;
    };
-   window.__soleCorreccionCobroProducto=true;
- }
-
-
- // Edición de costos de liquidaciones antiguas con datos completos restaurados.
- // El modo CALCULADO no debe perder un costo de reproceso documentado
- // simplemente porque las horas/insumos anteriores no existían en la ficha web.
- function habilitarDesgloseHistorico(){
-  if(window.__soleDesgloseHistoricoV2||typeof window.editProductClaimFull!=='function'
-     ||typeof window.pcManualReworkCosts!=='function')return;
-  let actual=null;
-  const prevEdit=window.editProductClaimFull;
-  const prevNew=window.newProductClaim;
-  const prevRework=window.pcManualReworkCosts;
-  const refresh=()=>{try{if(typeof calcProductClaim==='function')calcProductClaim(false)}catch(e){console.warn('Cálculo histórico',e)}};
-  function removeControl(){
-   const el=$('soleReworkDocumentedControl');if(el)el.remove();
-  }
-  window.editProductClaimFull=function(claim){
-   actual=null;removeControl();
-   const c=typeof claimDataByNo==='function'?claimDataByNo(claim):null;
-   const documented=Number(c?.reworkChargeTotal ?? c?.builderSnapshot?.reworkChargeTotal);
-   const result=prevEdit.apply(this,arguments);
-   if(String(claim).trim().toUpperCase()!=='2026-018'
-        ||!Number.isFinite(documented)||documented<=0)return result;
-   actual={claim:'2026-018',documented};
-   const anchor=$('pcReworkCostRows')?.closest('table');
-   const parent=anchor?.parentElement||$('pcCostCard');
-   if(parent){
-     const div=document.createElement('div');div.id='soleReworkDocumentedControl';
-     div.style.cssText='padding:10px 14px;margin:8px 0;border:1px solid #bbd1df;border-radius:10px;background:#f1f8fc;color:#21485d;font:13px Segoe UI,Arial,sans-serif';
-     const label=document.createElement('label');
-     label.style.cssText='display:flex;align-items:center;gap:8px;font-size:13px;font-weight:700;color:#21485d';
-     const chk=document.createElement('input');chk.type='checkbox';chk.checked=true;chk.id='soleReworkDocumentedCheck';
-     chk.style.cssText='width:18px;height:18px;flex:none;margin:0';
-     const span=document.createElement('span');span.textContent='Usar costo de reproceso documentado: USD '+documented.toFixed(2);
-     label.append(chk,span);div.appendChild(label);
-     const small=document.createElement('p');small.style.cssText='font-size:11px;margin:6px 0 0;color:#567285';
-     small.textContent='Desactiva la casilla si deseas calcular el reproceso desde las horas, operarios e insumos actuales. El cobro de productos es independiente.';
-     div.appendChild(small);parent.appendChild(div);
-     chk.addEventListener('change',refresh);
+   if(typeof previousNew==='function'){
+     window.newProductClaim=function(){eraseInfo();return previousNew.apply(this,arguments)};
    }
-   refresh();
-   return result;
-  };
-  if(typeof prevNew==='function')window.newProductClaim=function(){
-    actual=null;removeControl();return prevNew.apply(this,arguments);
-  };
-  window.pcManualReworkCosts=function(){
-    const normal=prevRework.apply(this,arguments);
-    const check=$('soleReworkDocumentedCheck');
-    if(!actual||$('pcClaimNo')?.value?.trim().toUpperCase()!==actual.claim||!check?.checked
-       ||$('pcAmountMode')?.value==='ANTERIOR')return normal;
-    // Conservar las partidas existentes, indicando el ajuste pendiente entre
-    // el cálculo nuevo y el documento histórico; NO inventar sus partidas.
-    const documented=actual.documented,diff=documented-(+normal.totalUsd||0);
-    const fx=+$('pcFx')?.value||+cfg.fx||1;
-    if(Math.abs(diff)>.0001){
-      normal.rows=[...normal.rows,[
-        'Conciliación con reproceso documentado',
-        'Diferencia entre el cálculo actual y el importe conservado en el expediente',
-        diff*fx,diff
-      ]];
-    }
-    normal.totalUsd=documented;
-    normal.totalPen=normal.rows.reduce((sum,row)=>sum+(+row[2]||0),0);
-    return normal;
-  };
-  window.__soleDesgloseHistoricoV2=true;
+   window.__soleCalculoHistorico018=true;
  }
 
  function wireControls(){
@@ -636,8 +642,7 @@
   firebase.initializeApp(cfg);auth=firebase.auth();db=firebase.firestore();
   auth.setPersistence(firebase.auth.Auth.Persistence.SESSION).catch(e=>console.warn('Persistencia:',e));
   wireControls();
-  habilitarCorreccionCobroProducto();
-  habilitarDesgloseHistorico();
+  habilitarCalculoHistorico018();
   auth.onAuthStateChanged(authChanged,e=>showProblem('Error Firebase Auth: '+e.message));
   window.soleV126Online={get estado(){return{ready,acceso:'privado_corporativo',rol:role,email:user?.email||null,dirty,busy,conflict,error:syncError,cambiosRemotosEnEspera:!!pending,cantidad:saved.size,ultimaRecepcion:lastRemoteAt}},guardar:()=>{dirty=true;return upload()}};
  }catch(e){showProblem('Error de inicialización: '+e.message)}
