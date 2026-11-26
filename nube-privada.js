@@ -216,6 +216,7 @@
   document.documentElement.classList.toggle('sole-is-admin',role==='Administrador');
   $('soleSignedAs').textContent=(user.email||'Usuario')+' · '+role;
   boot.hidden=true;
+  habilitarRestauracion018();
   label('☁ Acceso autorizado · '+(saved.size||0)+' expediente(s) en la nube','ok');
  }
  function loadSeeds(snapshot){
@@ -305,6 +306,83 @@
    alert('Importación terminada. Bloques creados: '+created+'. Ya existentes (NO reemplazados): '+skipped+'. Las liquidaciones de la nube no fueron borradas.');
   }catch(e){alert('No se pudo terminar la importacion: '+(e.message||e));console.error(e)}
   finally{$('soleImportFile').value=''}
+ }
+
+ function habilitarRestauracion018(){
+  if(role!=='Administrador'||!ready||$('soleRestaurar018'))return;
+  const parent=$('soleAdminImport')?.parentElement;
+  if(!parent)return;
+  const button=document.createElement('button');
+  button.type='button';button.id='soleRestaurar018';button.textContent='Restaurar detalle 2026-018';
+  button.title='Recuperar exclusivamente series, repuestos y datos técnicos del PDF de la liquidación 2026-018';
+  const picker=document.createElement('input');picker.type='file';picker.accept='.json,application/json';picker.hidden=true;
+  parent.insertBefore(button,$('soleAdminImport'));parent.appendChild(picker);
+  button.addEventListener('click',()=>{if(!busy&&!dirty&&!conflict)picker.click();else alert('Primero confirma el guardado de los cambios pendientes.');});
+  picker.addEventListener('change',async()=>{
+   const file=picker.files&&picker.files[0];if(!file)return;
+   button.disabled=true;
+   try{
+    if(role!=='Administrador'||!user||!ready||busy||dirty||conflict)throw Error('No hay una sesión administradora lista para restaurar.');
+    if(file.size>30000)throw Error('Archivo de restauración demasiado grande.');
+    const data=JSON.parse(await file.text());
+    if(data.schema!=='SOLE_REPARAR_DETALLE_2026-018_V1'||data.claim!=='2026-018'||!Array.isArray(data.lines)||data.lines.length!==2)
+      throw Error('El archivo no corresponde a la ficha de recuperación 2026-018.');
+    const byCode=Object.fromEntries(data.lines.map(x=>[x.code,x]));
+    const a=byCode['3120SOLCO060'],b=byCode['3120SOLCO066'];
+    if(!a||!b||a.importedBadQty!==17||b.importedBadQty!==5||a.serials?.length!==26||b.serials?.length!==5||a.defectiveSpareParts?.length!==4||b.defectiveSpareParts?.length!==3)
+      throw Error('Las cantidades, series o repuestos no coinciden con el PDF original.');
+    const id='2026-018',ref=db.collection(COLLECTION).doc(id);
+    const prior=await ref.get({source:'server'});
+    const raw=prior.exists?prior.data():null;
+    const existing=raw?fromFirestore(raw):{claim:id,registro:null,edicion:{},compensaciones:[],eliminada:false};
+    if(existing.eliminada)throw Error('La liquidación fue eliminada en Firebase. No se restaurará automáticamente.');
+    const live=typeof claimDataByNo==='function'?claimDataByNo(id):null;
+    const amount=Number(existing.edicion?.amount??live?.amount??existing.registro?.amount??0);
+    if(!Number.isFinite(amount)||amount<=0)throw Error('No se pudo determinar el monto vigente. No se cambiarán montos.');
+    const status=existing.edicion?.status||live?.status||existing.registro?.status||'PENDIENTE';
+    const base=existing.registro||{};
+    const priorLines=base.builderSnapshot?.lines||base.rows||[];
+    if(priorLines.some(x=>x.serials?.length||x.defectiveSpareParts?.length)){
+      if(!confirm('La liquidación ya tiene series o repuestos guardados. ¿Deseas reemplazar SOLO el detalle técnico con el PDF, conservando montos, seguimientos y compensaciones?'))return;
+    }
+    const backup={formato:'SOLE-RESPALDO-2026-018',fecha:new Date().toISOString(),id,
+      anterior:raw,importeVigente:amount};
+    const blob=new Blob([JSON.stringify(backup,null,2)],{type:'application/json'});
+    const url=URL.createObjectURL(blob),link=document.createElement('a');
+    link.href=url;link.download='SOLE_2026-018_RESPALDO_ANTES_RESTAURAR.json';document.body.appendChild(link);link.click();link.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),60000);
+    if(!confirm('Se solicitó la descarga del respaldo de 2026-018. COMPRUEBA que está guardado en Descargas. ¿Restaurar ahora las 31 series y 7 referencias de repuestos SIN modificar el monto USD '+amount.toFixed(2)+'?'))return;
+    const lines=data.lines.map(x=>copy(x));
+    const meta=data.metadata||{};
+    const s={...(base.builderSnapshot||{}),mode:'REPROCESO',claim:id,
+      documentLanguage:'EN',preparedBy:base.preparedBy||meta.preparedBy||'',
+      supplier:base.supplier||meta.supplier||'CHINABEST / VATTI',brand:base.brand||meta.brand||'S-COLLECTION',
+      date:base.date||meta.date||'',status,problem:base.problem||meta.problem||'',
+      notes:base.builderSnapshot?.notes||base.observations||meta.notes||'',
+      warehouse:base.builderSnapshot?.warehouse||'121',chargeTransport:'NO',
+      lines,oldFormat:true,manualHistoricalAmount:amount};
+    const rows=lines.map(x=>({...copy(x),claim:id,lotQty:x.qty,warehouse:x.warehouse||'121',
+      spareParts:copy(x.spareParts||[]),defectiveSpareParts:copy(x.defectiveSpareParts||[]),serials:copy(x.serials||[])}));
+    const registro={...base,claim:id,claimType:'PRODUCTO',supplier:s.supplier,brand:s.brand,
+      status,amount,preparedBy:s.preparedBy,date:s.date,problem:s.problem,
+      observations:base.observations||live?.observations||('LIQUIDACIÓN PRODUCTO · '+s.notes),
+      rows,builderSnapshot:s,oldFormat:true,manualHistoricalAmount:amount,
+      reworkChargeTotal:base.reworkChargeTotal??meta.sourceReprocessingUsd,
+      productChargeTotal:base.productChargeTotal??meta.sourceProductUsd};
+    const next={claim:id,registro,edicion:copy(existing.edicion||{}),
+      compensaciones:copy(existing.compensaciones||[]),eliminada:false};
+    await db.runTransaction(async tx=>{
+      const current=await tx.get(ref);
+      if(current.exists!==prior.exists||(current.exists&&String(current.data().revision||'')!==String(raw.revision||'')))
+        throw Error('La liquidación cambió mientras se preparaba la restauración. Vuelve a intentarlo.');
+      tx.set(ref,{...toFirestore(next),revision:(self.crypto?.randomUUID?.()||Date.now()+'-018'),
+        version:126,autor:user.uid,actualizado:firebase.firestore.FieldValue.serverTimestamp()});
+    });
+    label('Restauración de 2026-018 guardada: 31 series y 7 referencias de repuestos. Importe y seguimientos conservados.','ok');
+    alert('Liquidación 2026-018 restaurada. Abre «Editar liquidación» para verificar las series y los repuestos.');
+   }catch(e){label('Error al restaurar 2026-018: '+(e.message||e),'error');alert('No se restauró la liquidación: '+(e.message||e));console.error(e)}
+   finally{picker.value='';button.disabled=false}
+  });
  }
  function wireControls(){
   $('soleLoginForm').addEventListener('submit',async e=>{
