@@ -217,6 +217,7 @@
   $('soleSignedAs').textContent=(user.email||'Usuario')+' · '+role;
   boot.hidden=true;
   habilitarRestauracion018();
+  habilitarImportacionBasesV124();
   label('☁ Acceso autorizado · '+(saved.size||0)+' expediente(s) en la nube','ok');
  }
  function loadSeeds(snapshot){
@@ -384,6 +385,104 @@
    finally{picker.value='';button.disabled=false}
   });
  }
+
+ // Herramientas de recuperación de las bases originales V124: los datos NO se publican en GitHub.
+ function soleLeerLiteralV124(html,nombre){
+   const m=new RegExp('\\b'+nombre+'\\s*=\\s*([\\[{])').exec(html);
+   if(!m)throw Error('No existe la base '+nombre+' dentro de este HTML.');
+   const i=m.index+m[0].length-1,opening=html[i],closing=opening==='['?']':'}';
+   let depth=0,quoted=false,slash=false;
+   for(let j=i;j<html.length;j++){
+     const c=html[j];
+     if(quoted){if(slash)slash=false;else if(c==='\\')slash=true;else if(c==='"')quoted=false;continue}
+     if(c==='"'){quoted=true;continue}
+     if(c===opening)depth++;
+     if(c===closing&&!--depth)return JSON.parse(html.slice(i,j+1));
+     if(c===closing)depth++;
+   }
+   throw Error('No se pudo leer el bloque '+nombre);
+ }
+ function habilitarImportacionBasesV124(){
+   if(role!=='Administrador'||!ready||$('soleImportarBasesV124'))return;
+   const original=$('soleAdminImport'),parent=original&&original.parentElement;
+   if(!parent)return;
+   const btn=document.createElement('button');
+   btn.id='soleImportarBasesV124';btn.type='button';btn.textContent='Recuperar bases del HTML V124';
+   btn.title='Restaurar solo las tablas técnicas, muestreos, cajas y catálogos; NO reemplaza liquidaciones.';
+   const input=document.createElement('input');input.type='file';input.accept='.html,text/html';input.hidden=true;
+   parent.insertBefore(btn,original);parent.appendChild(input);
+   btn.addEventListener('click',()=>{if(!busy&&!dirty&&!conflict)input.click();else alert('Primero termina los cambios pendientes de guardar.');});
+   input.addEventListener('change',async()=>{
+     const file=input.files&&input.files[0];if(!file)return;
+     btn.disabled=true;
+     try{
+       if(role!=='Administrador'||!user||!ready||busy||dirty||conflict)throw Error('Es necesario iniciar sesión como Administrador y guardar los cambios pendientes.');
+       if(file.size>5000000)throw Error('El HTML seleccionado es demasiado grande.');
+       const html=await file.text();
+       if(!html.includes('Liquidaciones de Calidad V124'))throw Error('Selecciona el archivo original SOLE_LIQUIDACIONES_V124.html.');
+       const bases=SEEDS.filter(k=>k!=='HIST');
+       const data={};
+       for(const name of bases)data[name]=soleLeerLiteralV124(html,name);
+       const counts={cajas:data.BOX_SEED?.rows?.length||0,muestreos:data.QA_SEED?.pt?.length||0,
+         catalogo:data.CODE_CATALOG_SEED_V124?.length||0,planillas:data.SEED_PL?.length||0};
+       if(counts.cajas<1400||counts.muestreos<70||counts.catalogo<500||counts.planillas<20)
+         throw Error('Las bases no corresponden al respaldo original completo: '+JSON.stringify(counts));
+       for(const name of bases){
+         if(new TextEncoder().encode(JSON.stringify(data[name])).length>800000)
+           throw Error('El bloque '+name+' supera el tamaño seguro para Firebase.');
+       }
+       if(!confirm('Se detectaron '+counts.cajas+' filas de cajas, '+counts.muestreos+' muestreos, '+counts.catalogo+' códigos y '+bases.length+' bases originales. Se conservarán TODAS las liquidaciones, montos, compensaciones y seguimientos de Firebase.\n\n¿Descargar el respaldo de las bases online y preparar la restauración?'))return;
+       const snapshot=await db.collection(SEEDS_COLLECTION).get({source:'server'});
+       const previous={formato:'SOLE-RESPALDO-BASES-FIREBASE-V124',fecha:new Date().toISOString(),
+         bases:snapshot.docs.map(d=>({id:d.id,contenido:d.data()}))};
+       const blob=new Blob([JSON.stringify(previous,null,2)],{type:'application/json'});
+       const url=URL.createObjectURL(blob),a=document.createElement('a');
+       a.href=url;a.download='SOLE_BASES_FIREBASE_RESPALDO_ANTES_V124.json';document.body.appendChild(a);a.click();a.remove();
+       setTimeout(()=>URL.revokeObjectURL(url),60000);
+       if(!confirm('Comprueba que se descargó el respaldo SOLE_BASES_FIREBASE_RESPALDO_ANTES_V124.json.\n\n¿Reemplazar solo las '+bases.length+' bases técnicas con los datos del HTML original V124? No se tocarán las liquidaciones de la nube.'))return;
+       const batch=db.batch();
+       for(const name of bases){
+         batch.set(db.collection(SEEDS_COLLECTION).doc(name),{
+           json:JSON.stringify(data[name]),formato:'sole-v130',autor:user.uid,
+           actualizado:firebase.firestore.FieldValue.serverTimestamp()
+         });
+       }
+       await batch.commit();
+       label('Bases V124 restauradas en Firebase: '+counts.cajas+' filas de cajas, '+counts.muestreos+' muestreos y '+counts.catalogo+' códigos. Liquidaciones intactas.','ok');
+       alert('Bases recuperadas correctamente. Las liquidaciones NO se modificaron. Actualiza con Ctrl + F5 para ver las tablas.');
+     }catch(e){label('No se pudo recuperar bases V124: '+(e.message||e),'error');alert('No se cambiaron las bases: '+(e.message||e));console.error(e)}
+     finally{input.value='';btn.disabled=false}
+   });
+ }
+ // Las fichas antiguas tienen un total histórico manual que antes ignoraba el checkbox COBRAR PRODUCTO.
+ // Al cambiar el concepto, preservar el costo restante y descontar solamente el subtotal de producto.
+ function habilitarCorreccionCobroProducto(){
+   if(window.__soleCorreccionCobroProducto||typeof window.pcUpdateAction!=='function')return;
+   const previa=window.pcUpdateAction;
+   window.pcUpdateAction=function(i,k,on){
+     if(k!=='chargeProduct')return previa(i,k,on);
+     const legacy=$('pcAmountMode')?.value==='ANTERIOR';
+     const prevTotal=+($('pcLegacyAmount')?.value||0);
+     const totalProductos=()=>productClaimLines.reduce((a,l)=>a+pcLineSubtotal(l),0);
+     const antes=legacy?totalProductos():0;
+     const result=previa(i,k,on);
+     if(legacy){
+       const despues=totalProductos(),delta=despues-antes;
+       if(Math.abs(delta)>0.0001){
+         const nuevo=Math.max(0,prevTotal+delta);
+         if($('pcLegacyAmount'))$('pcLegacyAmount').value=nuevo.toFixed(2);
+         if($('pcLegacyAmountQuick'))$('pcLegacyAmountQuick').value=nuevo.toFixed(2);
+         window.pcEditingSavedAmount=nuevo;
+         calcProductClaim(false);
+       }else if(!on){
+         alert('No se puede descontar el producto porque faltan cantidades o precios en esta ficha histórica. Primero recupera sus series y repuestos usando el respaldo original; no se modificó el importe.');
+       }
+     }
+     return result;
+   };
+   window.__soleCorreccionCobroProducto=true;
+ }
+
  function wireControls(){
   $('soleLoginForm').addEventListener('submit',async e=>{
    e.preventDefault();
@@ -419,6 +518,7 @@
   firebase.initializeApp(cfg);auth=firebase.auth();db=firebase.firestore();
   auth.setPersistence(firebase.auth.Auth.Persistence.SESSION).catch(e=>console.warn('Persistencia:',e));
   wireControls();
+  habilitarCorreccionCobroProducto();
   auth.onAuthStateChanged(authChanged,e=>showProblem('Error Firebase Auth: '+e.message));
   window.soleV126Online={get estado(){return{ready,acceso:'privado_corporativo',rol:role,email:user?.email||null,dirty,busy,conflict,error:syncError,cambiosRemotosEnEspera:!!pending,cantidad:saved.size,ultimaRecepcion:lastRemoteAt}},guardar:()=>{dirty=true;return upload()}};
  }catch(e){showProblem('Error de inicialización: '+e.message)}
