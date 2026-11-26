@@ -221,32 +221,79 @@
   label('☁ Acceso autorizado · '+(saved.size||0)+' expediente(s) en la nube','ok');
  }
  function loadSeeds(snapshot){
-  const raw={};
+  const raw={},dates={};
   snapshot.forEach(doc=>{
    if(!SEEDS.includes(doc.id))return;
-   try{raw[doc.id]=JSON.parse(doc.data().json)}catch(e){console.error('Dato privado invalido:',doc.id,e)}
+   try{
+    raw[doc.id]=JSON.parse(doc.data().json);
+    dates[doc.id]=doc.data().actualizado?.toMillis?.()||0;
+   }catch(e){console.error('Dato privado invalido:',doc.id,e)}
   });
   applying=true;
   try{
    if(Array.isArray(raw.HIST))HIST=raw.HIST;
-   if(Array.isArray(raw.SEED_PL))SEED_PL=raw.SEED_PL;
-   if(Array.isArray(raw.SEED_STRAPS))SEED_STRAPS=raw.SEED_STRAPS;
-   if(Array.isArray(raw.SEED_PUR))SEED_PUR=raw.SEED_PUR;
-   if(Array.isArray(raw.SEED_OP))SEED_OP=raw.SEED_OP;
-   if(Array.isArray(raw.SEED_WH))SEED_WH=raw.SEED_WH;
-   if(Array.isArray(raw.SEED_CONS))SEED_CONS=raw.SEED_CONS;
-   if(raw.BOX_SEED && Array.isArray(raw.BOX_SEED.rows)){
-    BOX_SEED=raw.BOX_SEED;
-    // Los datos editados en este dispositivo tienen prioridad sobre un semillero.
-    if(!boxDb?.rows?.length)boxDb=copy(BOX_SEED);
+   for(const name of ['SEED_PL','SEED_STRAPS','SEED_PUR','SEED_OP','SEED_WH','SEED_CONS']){
+    if(Array.isArray(raw[name])){
+     if(name==='SEED_PL')SEED_PL=raw[name];
+     if(name==='SEED_STRAPS')SEED_STRAPS=raw[name];
+     if(name==='SEED_PUR')SEED_PUR=raw[name];
+     if(name==='SEED_OP')SEED_OP=raw[name];
+     if(name==='SEED_WH')SEED_WH=raw[name];
+     if(name==='SEED_CONS')SEED_CONS=raw[name];
+    }
    }
-   if(raw.QA_SEED && Array.isArray(raw.QA_SEED.pt)){
-    QA_SEED=raw.QA_SEED;
-    if(!qaData?.pt?.length)qaData=copy(QA_SEED);
-   }
-   if(Array.isArray(raw.CODE_CATALOG_SEED_V124)) {
+   if(raw.BOX_SEED&&Array.isArray(raw.BOX_SEED.rows))BOX_SEED=raw.BOX_SEED;
+   if(raw.QA_SEED&&Array.isArray(raw.QA_SEED.pt))QA_SEED=raw.QA_SEED;
+   if(Array.isArray(raw.CODE_CATALOG_SEED_V124)){
     CODE_CATALOG_SEED_V124=raw.CODE_CATALOG_SEED_V124;
     try{mergeFullCodeCatalogV124(false)}catch(e){console.warn('Catálogo protegido:',e)}
+   }
+   // cfg se carga inicialmente desde localStorage. Actualizar SEED_* por sí solo
+   // NO actualizaba las tablas visibles. Firebase es la base maestra al restaurar V124.
+   const key='SOLE_V124_SEEDS_APPLIED_REV3';
+   const revision=JSON.stringify([
+     '2026-11-V124',dates.SEED_PL,dates.SEED_STRAPS,dates.SEED_PUR,
+     dates.SEED_OP,dates.SEED_WH,dates.SEED_CONS,dates.BOX_SEED,dates.QA_SEED,
+     dates.CODE_CATALOG_SEED_V124
+   ]);
+   if(raw.BOX_SEED?.rows?.length>=1400&&raw.QA_SEED?.pt?.length>=70
+       &&raw.CODE_CATALOG_SEED_V124?.length>=500
+       &&localStorage.getItem(key)!==revision){
+    const tables=[
+      ['productLines','SEED_PL'],['straps','SEED_STRAPS'],['purchases','SEED_PUR'],
+      ['operators','SEED_OP'],['warehouses','SEED_WH'],['consumables','SEED_CONS']
+    ];
+    // Salvar la configuración anterior en el propio navegador antes de aplicar
+    // las tablas originales. No afecta montos, fechas, usuarios ni liquidaciones.
+    try{
+      const old=localStorage.getItem('SOLE_QA_CFG_V3');
+      if(old)localStorage.setItem('SOLE_V124_CFG_PREVIA_AL_RESTAURAR',old);
+    }catch(e){console.warn('No se pudo respaldar la configuración local',e)}
+    if(typeof cfg==='object'&&cfg){
+      for(const [field,name] of tables)if(Array.isArray(raw[name]))cfg[field]=copy(raw[name]);
+      try{localStorage.setItem('SOLE_QA_CFG_V3',JSON.stringify(cfg))}
+      catch(e){console.warn('No se pudo persistir la configuración V124',e)}
+    }
+    boxDb=copy(BOX_SEED);qaData=copy(QA_SEED);
+    try{if(typeof persistBoxDb==='function')persistBoxDb()}catch(e){console.warn('Cajas IndexedDB',e)}
+    try{if(typeof persistQaData==='function')persistQaData()}catch(e){console.warn('Muestreos IndexedDB',e)}
+    localStorage.setItem(key,revision);
+    // En algunos equipos initBigDataStorage termina después del primer snapshot.
+    // Reconciliar solo si la carga vieja revirtió la cantidad importada.
+    setTimeout(()=>{
+      if(!user||!role)return;
+      const reapplyBox=boxDb?.rows?.length!==BOX_SEED.rows.length;
+      const reapplyQa=qaData?.pt?.length!==QA_SEED.pt.length;
+      if(reapplyBox){boxDb=copy(BOX_SEED);try{persistBoxDb()}catch(e){}}
+      if(reapplyQa){qaData=copy(QA_SEED);try{persistQaData()}catch(e){}}
+      if(reapplyBox||reapplyQa){
+        for(const fn of ['renderBoxDatabase','renderQuality','renderUnloading','renderHome'])
+          try{if(typeof window[fn]==='function')window[fn]()}catch(e){}
+      }
+    },900);
+   }
+   for(const fn of ['renderConfig','renderBoxDatabase','renderQuality','renderUnloading']){
+     try{if(typeof window[fn]==='function')window[fn]()}catch(e){console.warn('Error al refrescar '+fn,e)}
    }
    repaint();
   }finally{applying=false}
