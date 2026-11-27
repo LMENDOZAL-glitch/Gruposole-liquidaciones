@@ -3911,11 +3911,11 @@ body{background:#f4f7fb!important}.rail,.hero{display:none!important}.shell{disp
   pcManualReworkCosts=function(){
     if(!pcHistoricalCostLock?.enabled)return _manual();
     // Importes de reproceso cotejados contra los PDF oficiales enviados al proveedor.
-    // Solo 2026-019 y 2026-023: nunca modificar 2026-018 ni datos de Firebase.
+    // Costos históricos verificados de 2026-018, 2026-019 y 2026-023; no modifica Firebase.
     // Mantener los importes originales aunque el catálogo de costos actual haya cambiado.
     const historicalClaim=String(pcHistoricalCostLock.claim||'').trim();
     const historicalSupplier=String($('pcSupplier')?.value||'').toUpperCase();
-    const historicalTotals={'2026-019':2172.30,'2026-023':507.60};
+    const historicalTotals={'2026-018':458.03,'2026-019':2172.30,'2026-023':507.60};
     if(!pcHistoricalCostLock.manualOverride &&
        Object.prototype.hasOwnProperty.call(historicalTotals,historicalClaim) &&
        historicalSupplier.includes('CHINABEST') && historicalSupplier.includes('VATTI')){
@@ -3925,7 +3925,9 @@ body{background:#f4f7fb!important}.rail,.hero{display:none!important}.shell{disp
       // Reutilizar el desglose original cuando coincide; no sustituirlo por costos de hoy.
       const stored=Number(pcHistoricalCostLock.reworkUsd)||0;
       if(Math.abs(stored-amount)<0.015 && Math.abs(original.totalUsd-amount)<0.015) return original;
-      const detail=historicalClaim==='2026-019'
+      const detail=historicalClaim==='2026-018'
+        ? {forkliftUsd:14.40,qualityUsd:115.94,storageUsd:122.14,directReworkUsd:167.00,reworkCostUsd:128.46,indirectUsd:38.54,consumablesUsd:38.55,reprocessedQty:200,area:9.80,months:2,costHourUsd:6.42,manHours:20,productRatio:12}
+        : historicalClaim==='2026-019'
         ? {forkliftUsd:81.17,qualityUsd:238.81,storageUsd:1033.06,directReworkUsd:687.92,reworkCostUsd:529.17,indirectUsd:158.75,consumablesUsd:131.34,reprocessedQty:805,area:53.65,months:3}
         : {forkliftUsd:0,qualityUsd:0,storageUsd:0,directReworkUsd:507.60,reworkCostUsd:507.60,indirectUsd:0,consumablesUsd:0,reprocessedQty:0,area:0,months:1};
       const rows=[
