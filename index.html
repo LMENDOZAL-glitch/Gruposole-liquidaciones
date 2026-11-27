@@ -2893,6 +2893,7 @@ function generateReturnSupplierDocument(asPdf=false){
   }
 }
 function generateSupplierClaimDocument(asPdf=false){
+  if(window.soleBlockedConsolidationActive && typeof window.soleGenerateBlockedCompactDoc==='function')return window.soleGenerateBlockedCompactDoc(asPdf);
   if(isReturnClaimV102()){generateReturnSupplierDocument(asPdf);return}
   if(!productClaimLines.length){alert('Agrega al menos un producto/código.');return}
   // Abrir la pestaña al inicio del clic evita que Chrome bloquee el PDF mientras se compone el informe.
@@ -6560,6 +6561,7 @@ body.ui-v126 .q129-state option{background:var(--u-surface,#fff);color:var(--u-i
 <script src="comite-fallas.js" defer></script>
 <script src="pdf-registro.js" defer></script>
 <script src="consolidado-bloqueados.js" defer></script>
+<script src="pdf-consolidado-bloqueados.js" defer></script>
 <script src="repuestos-consolidados.js" defer></script>
 <!-- Restauración V124 completada: importador retirado de la interfaz. Se conserva el módulo en el repositorio para respaldo. -->
 </body></html>
