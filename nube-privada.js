@@ -957,17 +957,44 @@
  async function historicalNotes001(){
   hiddenCloudReady();
   const id='2026-001';
-  const seed=await db.collection(SEEDS_COLLECTION).doc('HIST').get({source:'server'});
+  const [seed,doc]=await Promise.all([
+    db.collection(SEEDS_COLLECTION).doc('HIST').get({source:'server'}),
+    db.collection(COLLECTION).doc(id).get({source:'server'})
+  ]);
   const rows=seed.exists?JSON.parse(seed.data().json||'[]'):[];
   if(!Array.isArray(rows))throw Error('Histórico no disponible.');
-  const c=cloudClaim001(),supplier=String(c?.supplier||'').trim().toUpperCase();
+  const current=doc.exists?fromFirestore(doc.data()):null;
+  const supplier=String(current?.registro?.supplier||cloudClaim001()?.supplier||'').trim().toUpperCase();
   const relevant=rows.filter(x=>norm(x.claim)===id && (!supplier||String(x.supplier||'').trim().toUpperCase()===supplier));
-  const notes=[...new Set(relevant.flatMap(x=>[x.observations,x.observation,x.defect,x.problem,x.supplierResponse,x.notes])
-    .map(x=>String(x||'').trim()).filter(Boolean))];
-  const report='LIQUIDACIÓN '+id+' / '+(supplier||'PROVEEDOR NO IDENTIFICADO')+'\n'+
-    'Notas recuperables del histórico: '+notes.length+'\n\n'+(notes.join('\n\n')||'No se encontraron notas históricas para este proveedor.')+
-    '\n\nEl sistema NO rellenará automáticamente datos que no existan.';
-  return {report,notes};
+  const sources=[];
+  const add=(label,x)=>{
+    if(typeof x==='string'&&x.trim())sources.push([label,x.trim()]);
+    if(Array.isArray(x)&&x.length)sources.push([label,x.map(v=>typeof v==='string'?v:JSON.stringify(v)).join('\n')]);
+  };
+  for(const x of relevant){
+    for(const field of ['observations','observation','defect','problem','supplierResponse','notes','trackingNote'])
+      add('Histórico '+field,x[field]);
+  }
+  const archived=current?.registro||{};
+  for(const field of ['observations','problem','notes','trackingNote'])add('Ficha actual '+field,archived[field]);
+  const ed=current?.edicion||{};
+  for(const field of ['observations','trackingNote','trackingEvents','calendarEvents','notes'])
+    add('Seguimiento en Firebase '+field,ed[field]);
+  const recovered=recovery.get(id);
+  if(recovered){
+    const recoverySupplier=String(recovered.registro?.supplier||supplier).toUpperCase();
+    if(!supplier||recoverySupplier===supplier){
+      for(const field of ['observations','trackingNote','trackingEvents','notes'])
+        add('Rescate local '+field,recovered.edicion?.[field]??recovered.registro?.[field]);
+    }
+  }
+  const unique=[...new Map(sources.map(([name,value])=>[name+'|'+value,[name,value]])).values()];
+  const report='LIQUIDACIÓN '+id+' / '+(supplier||'PROVEEDOR SIN IDENTIFICAR')+'\n'+
+    'Notas y eventos recuperables: '+unique.length+'\n\n'+
+    (unique.map(([label,value])=>label+':\n'+value).join('\n\n')||
+      'No se encontraron notas ni seguimientos adicionales en el histórico y los respaldos locales accesibles.')+
+    '\n\nNo se mezclaron notas de proveedores distintos ni se reemplazaron datos de Firebase.';
+  return {report,notes:unique.map(x=>x[1])};
  }
  function cloudClaim001(){
    return localClaims.find(x=>norm(x.claim)==='2026-001')||null;
