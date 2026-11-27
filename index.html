@@ -689,7 +689,7 @@ html.sole-authorized.sole-is-admin #soleAdminImport{display:inline-block!importa
       <label id="pcLegacyQuickAmountWrap" class="legacy-amount-input disabled">
         MONTO SOLICITADO USD
         <input id="pcLegacyAmountQuick" type="number" min="0" step=".01" value="0" disabled oninput="syncLegacyAmountFromQuick()">
-        <small>Este monto reemplazará el cálculo actual y será el que figure en Seguimiento.</small>
+        <small>Campo del formato anterior. Para modificar un costo protegido sin usar ese formato, utiliza «Editar costo histórico (USD)» en Costos.</small>
       </label>
     </div>
 
@@ -3823,17 +3823,73 @@ body{background:#f4f7fb!important}.rail,.hero{display:none!important}.shell{disp
     let card=document.getElementById('pcCostCard');if(!card||!pcHistoricalCostLock?.enabled)return;
     let b=document.createElement('div');b.id='costHistoryBanner';b.className='cost-history-banner';
     let mode=pcHistoricalCostLock.snapshot?'Se están usando los parámetros de costo guardados con esta liquidación.':'Esta liquidación es anterior al historial de parámetros. Se conserva el costo de reproceso guardado.';
-    b.innerHTML='<div><b>🔒 Costos históricos protegidos</b><small>'+mode+' Puedes editar textos, estado, series, repuestos u otros datos sin que un cambio posterior de sueldo/TC/insumos altere el costo original.</small></div><button class="btn primary" onclick="recalculateClaimWithCurrentConfig()">Recalcular con configuración actual</button>';
+    b.innerHTML='<div><b>🔒 Costos históricos protegidos</b><small>'+mode+' Puedes editar textos, estado, series, repuestos u otros datos sin que un cambio posterior de sueldo/TC/insumos altere el costo original.</small></div><button class="btn primary" type="button" onclick="recalculateClaimWithCurrentConfig()">Recalcular con configuración actual</button>';
+    const editButton=document.createElement('button');
+    editButton.type='button';editButton.className='btn ghost';
+    editButton.textContent='Editar costo histórico (USD)';
+    editButton.title='Ajustar manualmente el costo de reproceso sin activar Formato anterior ni modificar otros conceptos.';
+    editButton.addEventListener('click',()=>{
+      const wrap=document.getElementById('soleHistoricalCostForm');
+      if(!wrap)return;
+      wrap.hidden=!wrap.hidden;
+      if(!wrap.hidden)wrap.querySelector('input')?.focus();
+    });
+    b.appendChild(editButton);
+    const form=document.createElement('div');
+    form.id='soleHistoricalCostForm';form.hidden=true;
+    form.style.cssText='flex-basis:100%;width:100%;margin-top:10px;padding:12px;border:1px solid #bfd2df;border-radius:9px;background:#f5f9fc;color:#21445d';
+    const info=document.createElement('p');
+    info.style.cssText='font-size:12px;margin:0 0 8px;line-height:1.5';
+    info.textContent='Importe actual protegido: USD '+(Number(pcHistoricalCostLock.reworkUsd)||0).toFixed(2)+'. Puedes actualizar el reproceso conservando los productos, insumos y seguimientos. El cambio no se guarda hasta pulsar Guardar liquidación.';
+    const label=document.createElement('label');
+    label.textContent='Nuevo costo de reproceso (USD)';
+    label.style.cssText='display:block;font-size:12px;font-weight:700;margin:0 0 5px';
+    const input=document.createElement('input');
+    input.type='number';input.min='0';input.step='0.01';input.id='soleHistoricalCostUsd';
+    input.value=(Number(pcHistoricalCostLock.reworkUsd)||0).toFixed(2);
+    input.style.cssText='max-width:200px;padding:9px;border-radius:7px;border:1px solid #a7bfd0;background:#fff;color:#173e58;font-size:14px';
+    const apply=document.createElement('button');
+    apply.type='button';apply.className='btn primary';
+    apply.textContent='Aplicar al cálculo (sin guardar)';
+    apply.style.marginLeft='10px';
+    apply.addEventListener('click',()=>window.soleAplicarCostoHistorico());
+    form.append(info,label,input,apply);
+    b.appendChild(form);
     card.insertBefore(b,card.children[1]||null);
   }
+  window.soleAplicarCostoHistorico=function(){
+    const v=pcHistoricalCostLock?.enabled?document.getElementById('soleHistoricalCostUsd'):null;
+    if(!v)return;
+    const raw=String(v.value||'').trim(),amount=Number(raw);
+    if(!raw||!Number.isFinite(amount)||amount<0||amount>100000000){
+      alert('Ingresa un costo válido en USD (cero o un importe positivo).');
+      v.focus();return;
+    }
+    if($('pcAmountMode')?.value==='ANTERIOR'){
+      alert('Desmarca Formato anterior para que el nuevo costo de reproceso forme parte del total calculado.');
+      return;
+    }
+    const current=Number(pcHistoricalCostLock.reworkUsd)||0;
+    const next=Math.round(amount*100)/100;
+    if(Math.abs(current-next)<.005){
+      document.getElementById('soleHistoricalCostForm').hidden=true;
+      return;
+    }
+    if(!confirm('¿Usar USD '+next.toFixed(2)+' como nuevo costo de reproceso para esta liquidación?\n\nEl importe protegido actual es USD '+current.toFixed(2)+'. El total solicitado se actualizará, pero Firebase NO cambiará hasta pulsar Guardar liquidación.'))return;
+    const fx=Number($('pcFx')?.value)||Number(cfg.fx)||1;
+    setCostLock({...pcHistoricalCostLock,manualOverride:true,reworkUsd:next,
+      reworkPen:Math.round(next*fx*100)/100,
+      originalReworkUsd:pcHistoricalCostLock.originalReworkUsd??current});
+    calcProductClaim(false);
+  };
   window.recalculateClaimWithCurrentConfig=function(){if(!pcHistoricalCostLock?.enabled)return;if(!confirm('¿Aplicar la configuración ACTUAL de sueldos, insumos, almacenes y demás costos a esta liquidación? El importe puede cambiar.'))return;setCostLock(null);try{_autoPcPalletsV70()}catch(e){}renderPcConsumables();calcProductClaim(false);alert('Costos desbloqueados. A partir de ahora esta edición usa la configuración actual. Al guardar, estos valores quedarán como la nueva referencia histórica.')};
 
   const _manual=pcManualReworkCosts;
   pcManualReworkCosts=function(){
     if(!pcHistoricalCostLock?.enabled)return _manual();
-    if(pcHistoricalCostLock.snapshot){let old=cfg;try{cfg={...cfg,...deep(pcHistoricalCostLock.snapshot),consumables:deep(pcHistoricalCostLock.snapshot.consumables||cfg.consumables||[]),warehouses:deep(pcHistoricalCostLock.snapshot.warehouses||cfg.warehouses||[]),productLines:deep(pcHistoricalCostLock.snapshot.productLines||cfg.productLines||[]),productPallets:deep(pcHistoricalCostLock.snapshot.productPallets||cfg.productPallets||[])};return _manual()}finally{cfg=old}}
+    if(pcHistoricalCostLock.snapshot&&!pcHistoricalCostLock.manualOverride){let old=cfg;try{cfg={...cfg,...deep(pcHistoricalCostLock.snapshot),consumables:deep(pcHistoricalCostLock.snapshot.consumables||cfg.consumables||[]),warehouses:deep(pcHistoricalCostLock.snapshot.warehouses||cfg.warehouses||[]),productLines:deep(pcHistoricalCostLock.snapshot.productLines||cfg.productLines||[]),productPallets:deep(pcHistoricalCostLock.snapshot.productPallets||cfg.productPallets||[])};return _manual()}finally{cfg=old}}
     let usd=+pcHistoricalCostLock.reworkUsd||0,fx=+$('pcFx')?.value||cfg.fx||1,penv=Number.isFinite(+pcHistoricalCostLock.reworkPen)?+pcHistoricalCostLock.reworkPen:usd*fx;
-    return {rows:[['Costo histórico protegido','Importe guardado en la liquidación',penv,usd]],totalPen:penv,totalUsd:usd,externalTransportUsd:0,forkliftUsd:0,qualityUsd:0,storageUsd:0,directReworkUsd:usd,reprocessedQty:0,costHourUsd:0,productRatio:0,manHours:0,reworkCostUsd:usd,indirectUsd:0,consumablesPen:0,consumablesUsd:0,pallets:+$('pcPallets')?.value||0,area:0,trips:0,externalQty:0,months:+$('pcStorageMonths')?.value||0,qDays:+$('pcQualityDays')?.value||0,operators:+$('pcOperators')?.value||0,hoursPerOperator:+$('pcHours')?.value||0};
+    return {rows:[[pcHistoricalCostLock.manualOverride?'Costo histórico ajustado manualmente':'Costo histórico protegido',pcHistoricalCostLock.manualOverride?'Valor editable · pendiente de guardar':'Importe guardado en la liquidación',penv,usd]],totalPen:penv,totalUsd:usd,externalTransportUsd:0,forkliftUsd:0,qualityUsd:0,storageUsd:0,directReworkUsd:usd,reprocessedQty:0,costHourUsd:0,productRatio:0,manHours:0,reworkCostUsd:usd,indirectUsd:0,consumablesPen:0,consumablesUsd:0,pallets:+$('pcPallets')?.value||0,area:0,trips:0,externalQty:0,months:+$('pcStorageMonths')?.value||0,qDays:+$('pcQualityDays')?.value||0,operators:+$('pcOperators')?.value||0,hoursPerOperator:+$('pcHours')?.value||0};
   };
   const _renderConsumables=renderPcConsumables;
   renderPcConsumables=function(){let snap=activeCostSnapshot();if(!snap)return _renderConsumables();let old=cfg;try{cfg={...cfg,consumables:deep(snap.consumables||cfg.consumables||[])};return _renderConsumables()}finally{cfg=old}};
@@ -3846,7 +3902,7 @@ body{background:#f4f7fb!important}.rail,.hero{display:none!important}.shell{disp
     let c=localClaims.find(x=>typeof canon==='function'?canon(x.claim)===canon(claim):String(x.claim)===String(claim))||claimDataByNo(claim);
     if(c&&claimTypeOf(c)==='PRODUCTO'){
       let snap=c.costConfigSnapshot||c.builderSnapshot?.costConfigSnapshot||null;
-      setCostLock({enabled:true,claim:String(claim),snapshot:deep(snap),reworkUsd:+c.reworkChargeTotal||+c.manualRework?.costUsd||0,reworkPen:+c.manualRework?.costPen||0});
+      setCostLock({enabled:true,claim:String(claim),snapshot:deep(snap),manualOverride:!!(c.historicalManualOverride||c.builderSnapshot?.historicalManualOverride),originalReworkUsd:c.historicalReworkOriginalUsd??c.builderSnapshot?.historicalReworkOriginalUsd??null,reworkUsd:+c.reworkChargeTotal||+c.manualRework?.costUsd||0,reworkPen:+c.manualRework?.costPen||0});
     }
     let r=_editV70.apply(this,arguments);renderCostHistoryBanner();return r
   };
@@ -3856,7 +3912,23 @@ body{background:#f4f7fb!important}.rail,.hero{display:none!important}.shell{disp
     let snap=(pcHistoricalCostLock?.enabled&&pcHistoricalCostLock.snapshot)?deep(pcHistoricalCostLock.snapshot):(!pcHistoricalCostLock?.enabled?captureCostConfig():null);
     _saveV70.apply(this,arguments);
     let c=(localClaims||[]).find(x=>(typeof canon==='function'?canon(x.claim):String(x.claim))===claim);
-    if(c){if(snap)c.costConfigSnapshot=deep(snap);if(c.builderSnapshot&&snap)c.builderSnapshot.costConfigSnapshot=deep(snap);c.updatedAt=new Date().toISOString();localStorage.setItem(KCLAIMS,JSON.stringify(localClaims))}
+    if(c){
+      if(snap)c.costConfigSnapshot=deep(snap);
+      if(c.builderSnapshot&&snap)c.builderSnapshot.costConfigSnapshot=deep(snap);
+      if(pcHistoricalCostLock?.enabled){
+        c.historicalManualOverride=!!pcHistoricalCostLock.manualOverride;
+        if(c.builderSnapshot)c.builderSnapshot.historicalManualOverride=c.historicalManualOverride;
+        if(c.historicalManualOverride&&pcHistoricalCostLock.originalReworkUsd!=null){
+          c.historicalReworkOriginalUsd=pcHistoricalCostLock.originalReworkUsd;
+          if(c.builderSnapshot)c.builderSnapshot.historicalReworkOriginalUsd=pcHistoricalCostLock.originalReworkUsd;
+        }
+      }else{
+        c.historicalManualOverride=false;
+        if(c.builderSnapshot)c.builderSnapshot.historicalManualOverride=false;
+      }
+      c.updatedAt=new Date().toISOString();
+      localStorage.setItem(KCLAIMS,JSON.stringify(localClaims))
+    }
     setCostLock(null);
   };
 
