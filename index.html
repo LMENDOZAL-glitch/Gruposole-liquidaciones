@@ -3909,6 +3909,31 @@ body{background:#f4f7fb!important}.rail,.hero{display:none!important}.shell{disp
 
   const _manual=pcManualReworkCosts;
   pcManualReworkCosts=function(){
+    // 2026-018: costos fijos recuperados del PDF original remitido al proveedor.
+    // Se aplica tanto en el editor (tarjetas y tabla) como en el documento/PDF.
+    const claim018=String($('pcClaimNo')?.value||'').trim()==='2026-018';
+    const supplier018=String($('pcSupplier')?.value||'').toUpperCase();
+    if(claim018&&supplier018.includes('CHINABEST')&&supplier018.includes('VATTI')&&!isReturnClaimV102()){
+      const fx=Number($('pcFx')?.value)||Number(cfg.fx)||1;
+      const baseline=_manual();
+      const costs={forkliftUsd:14.40,qualityUsd:115.94,storageUsd:122.14,
+        directReworkUsd:167.00,reworkCostUsd:128.46,indirectUsd:38.54,
+        consumablesUsd:38.55,externalTransportUsd:0,reprocessedQty:200,
+        costHourUsd:6.42,productRatio:12,ratePerOperator:12,teamRate:12,
+        elapsedHours:20,manHours:20,area:9.80,months:2,pallets:5};
+      const rows=[
+        ['Traslado interno','Importe documentado',14.40*fx,14.40],
+        ['Supervisión de Calidad','Importe documentado',115.94*fx,115.94],
+        ['Almacenamiento adicional','9.80 m² × 2 meses',122.14*fx,122.14],
+        ['Mano de obra directa','20 horas-hombre',128.46*fx,128.46],
+        ['Gastos indirectos','Costo documentado',38.54*fx,38.54],
+        ['Insumos','Costo documentado',38.55*fx,38.55]
+      ];
+      return {...baseline,...costs,rows,totalUsd:458.03,totalPen:458.03*fx,
+        directReworkUsd:167.00,consumablesPen:38.55*fx,
+        areaPerPallet:1.96,consumableDetails:[{name:'Consumibles',qty:1,unit:'LOTE',cost:38.55*fx,subtotal:38.55*fx}],
+        historicalReference:'2026-018 / M26-065 · PDF original'};
+    }
     // El 2026-018 puede faltar en el respaldo, pero sus costos están documentados en el PDF original.
     const formClaim=String($('pcClaimNo')?.value||'').trim();
     const formSupplier=String($('pcSupplier')?.value||'').toUpperCase();
