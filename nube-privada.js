@@ -846,6 +846,84 @@
  }
 
  const KEEP_HIDDEN = Object.freeze(['2026-001','2026-002','2026-003','2026-016']);
+ // Recuperación independiente: primero las cuatro fichas completas; la limpieza va después.
+ async function restoreFourWithHistory(){
+   hiddenCloudReady();
+   const ids=['2026-001','2026-002','2026-003','2026-016'];
+   const [seed,collection]=await Promise.all([
+     db.collection(SEEDS_COLLECTION).doc('HIST').get({source:'server'}),
+     db.collection(COLLECTION).get({source:'server'})
+   ]);
+   if(!seed.exists)throw Error('No existe el histórico maestro en Firebase. No se ha modificado nada.');
+   const history=JSON.parse(seed.data()?.json||'[]');
+   if(!Array.isArray(history))throw Error('El histórico no es válido.');
+   const cloud=new Map(collection.docs.filter(d=>!d.data()?.archivadoV124).map(d=>[norm(d.id),{raw:d.data(),data:fromFirestore(d.data())}]));
+   const targets=[];
+   for(const id of ids){
+     const rows=history.filter(r=>norm(r.claim)===id);
+     if(!rows.length)throw Error('Faltan las filas históricas de '+id+'. No se hizo ninguna modificación.');
+     const suppliers=[...new Set(rows.map(r=>String(r.supplier||'').trim().toUpperCase()).filter(Boolean))];
+     if(suppliers.length!==1)throw Error('La liquidación '+id+' presenta proveedores contradictorios. Se canceló.');
+     const historical=rows.find(r=>r.unique)||rows[0];
+     const existing=cloud.get(id)?.data;
+     const existingRecord=existing?.registro||{};
+     const originalNotes=[...new Set(rows.map(r=>String(r.observations||'').trim()).filter(Boolean))];
+     const originalDefects=[...new Set(rows.map(r=>String(r.defect||'').trim()).filter(Boolean))];
+     // La ficha histórica es la fuente de la descripción del defecto y los comentarios.
+     // Las ediciones, eventos y compensaciones existentes se preservan exactamente.
+     if(existingRecord.supplier && String(existingRecord.supplier).trim().toUpperCase()!==suppliers[0])
+       throw Error('Conflicto de proveedor en '+id+'. No se mezclará con '+existingRecord.supplier+'.');
+     const registro={
+       ...existingRecord,
+       claim:id,claimType:'PRODUCTO',source:existingRecord.source||'HISTÓRICO',
+       supplier:historical.supplier,status:existingRecord.status||historical.status||'PENDIENTE',
+       amount:Number(existingRecord.amount??historical.uniqueAmount??historical.amount??0),
+       observations:existingRecord.observations && !/^LIQUIDACIÓN PRODUCTO\s*·?\s*$/i.test(String(existingRecord.observations).trim())
+         ? existingRecord.observations : originalNotes.join('\n'),
+       problem:existingRecord.problem||originalDefects.join(' / '),
+       rows:copy(rows),date:existingRecord.date||historical.emailDate||'',
+       historicalObservations:originalNotes, historicalDefects:originalDefects
+     };
+     const edicion=existing?.edicion||{};
+     const compensaciones=existing?.compensaciones||[];
+     targets.push({id,registro,edicion,compensaciones,raw:cloud.get(id)?.raw||null,notes:originalNotes});
+   }
+   const promptText=targets.map(x=>x.id+' · '+x.registro.supplier+' · '+x.registro.rows.length+
+     ' códigos/filas · '+x.notes.length+' observación(es)').join('\n');
+   if(!confirm('RECUPERACIÓN DE LAS CUATRO LIQUIDACIONES\n\n'+promptText+
+      '\n\nSe restaurará su visibilidad y se conservarán los comentarios históricos, seguimientos y compensaciones existentes. No se eliminará nada. ¿Continuar?'))
+     return 'Cancelado. Sin cambios.';
+   downloadHiddenBackup('CUATRO_PREVIO_RESTAURAR',{formato:'SOLE_RESPALDO_RECUPERAR_CUATRO_V1',
+     fecha:new Date().toISOString(),registros:targets});
+   busy=true;
+   try{
+     await db.runTransaction(async tx=>{
+       const refs=targets.map(x=>db.collection(COLLECTION).doc(x.id));
+       const snapshots=await Promise.all(refs.map(ref=>tx.get(ref)));
+       snapshots.forEach((snap,i)=>{
+         const before=targets[i].raw;
+         if(!!before!==snap.exists||
+           (before&&String(before.revision||'')!==String(snap.data()?.revision||'')))
+             throw Error('La liquidación '+targets[i].id+' cambió en la nube. Recarga y revisa antes de modificar.');
+       });
+       targets.forEach((target,i)=>{
+         const payload={claim:target.id,registro:target.registro,edicion:target.edicion,
+           compensaciones:target.compensaciones,eliminada:false};
+         tx.set(refs[i],{...toFirestore(payload),
+           revision:(self.crypto?.randomUUID?.()||Date.now()+'-'+Math.random().toString(36).slice(2)),
+           version:126,autor:user.uid,actualizado:firebase.firestore.FieldValue.serverTimestamp()});
+       });
+     });
+     const fresh=await db.collection(COLLECTION).get({source:'server'});
+     busy=false;receive(fresh);
+     const missed=targets.filter(x=>deletedClaims.has(x.id)||
+       !localClaims.some(c=>norm(c.claim)===x.id)).map(x=>x.id);
+     if(missed.length)throw Error('Firebase guardó los cambios, pero no se visualizaron: '+missed.join(', '));
+     return 'RESTAURADAS Y COMPROBADAS EN FIREBASE: '+ids.join(', ')+
+       '\nSe han recuperado las observaciones y defectos de las filas históricas.'+
+       '\nSeguimientos anteriores: se conservaron los que existían en Firebase.';
+   }finally{busy=false}
+ }
  async function bulkKeepAndClean(){
   hiddenCloudReady();
   const keep=new Set(KEEP_HIDDEN);
@@ -1002,6 +1080,7 @@
  window.soleGestionOcultos={
    restaurar:id=>hiddenCloudAction(id,'restore'),
    eliminar:id=>hiddenCloudAction(id,'delete'),
+   recuperarCuatro:restoreFourWithHistory,
    limpiarConservando:bulkKeepAndClean,
    notas001:historicalNotes001,
    get estado(){return {ready,rol:role,busy,dirty,conflict}}
