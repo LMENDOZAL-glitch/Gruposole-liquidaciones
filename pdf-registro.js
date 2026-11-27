@@ -152,22 +152,59 @@ function documentHtml(c){
  return text;
 }
 function pdf(id){
- if(!document.documentElement.classList.contains('sole-authorized')){alert('Debes iniciar sesión con un usuario autorizado.');return}
+ if(!document.documentElement.classList.contains('sole-authorized')){
+  alert('Debes iniciar sesión con un usuario autorizado.');return;
+ }
  const c=getClaim(id);
- if(!c){alert('No se encontró la liquidación '+id+' en el registro actual. Actualiza la página e inténtalo otra vez.');return}
+ if(!c){alert('No se encontró la liquidación '+id+'. Actualiza la página.');return}
+ const isBoxes=String(c.claimType||'PRODUCTO').toUpperCase().includes('CAJA');
+ if(!isBoxes){
+  // El formato oficial (con selección de idioma y estructura aprobada)
+  // está en el generador del editor. Se reutiliza sin guardar el expediente.
+  if(typeof window.editProductClaimFull!=='function'||typeof window.generateSupplierClaimDocument!=='function'){
+   alert('El generador oficial no está disponible. Actualiza la página con Ctrl+F5.');
+   return;
+  }
+  const originalClaim=idKey(c.claim);
+  try{
+   // Al abrir desde Registro no se guarda ni se cambia el estado.
+   // Solo se reconstruye temporalmente el formulario desde la ficha almacenada.
+   window.editProductClaimFull(originalClaim);
+   if(idKey(el('pcClaimNo')?.value)!==originalClaim)
+     throw Error('No se cargó el expediente correcto en el editor.');
+   const stored=Number(c.amount)||0;
+   const shown=Number(el('pcKTotal')?.dataset.value);
+   if(Number.isFinite(shown)&&Math.abs(stored-shown)>.02){
+    const proceed=confirm(
+      'La liquidación '+originalClaim+' tiene un monto guardado de '+usd(stored)+
+      ', pero el generador técnico calcula '+usd(shown)+
+      '.\n\nEs posible que las tablas o los costos se hayan actualizado después del registro.'+
+      '\nSi continúas, el PDF oficial mostrará el importe recalculado y NO cambiará Firebase.'+
+      '\n\n¿Deseas generar el PDF de todas formas?'
+    );
+    if(!proceed)return;
+   }
+   const ok=window.generateSupplierClaimDocument(true);
+   // Mantener visible el formulario cargado para que se pueda verificar el
+   // idioma y los importes si aparece un aviso o se bloquea la impresión.
+   if(ok===false)console.warn('No se generó el PDF oficial para '+originalClaim);
+  }catch(e){
+   console.error('PDF oficial desde Registro',e);
+   alert('No se pudo preparar el PDF oficial de '+originalClaim+': '+(e.message||e));
+  }
+  return;
+ }
+ // Para CAJAS se mantiene la impresión de la ficha guardada, ya que el
+ // generador de cajas depende de una selección temporal de Excel.
  let w=window.open('','_blank');
  if(!w){alert('Permite las ventanas emergentes para generar el PDF.');return}
  try{
-  w.document.open();
-  w.document.write(documentHtml(c));
-  w.document.close();
-  // Esperar a que se cargue el logotipo antes de abrir la impresión.
+  w.document.open();w.document.write(documentHtml(c));w.document.close();
   const run=()=>{if(w.closed)return;try{w.focus();w.print()}catch(e){console.warn('No se abrió impresión automáticamente',e)}};
   const img=w.document.querySelector('header img');
   if(img&&!img.complete){
    img.addEventListener('load',()=>setTimeout(run,180),{once:true});
    img.addEventListener('error',()=>setTimeout(run,180),{once:true});
-   setTimeout(()=>{if(!w.closed)w.document.querySelector('.screenbutton')?.focus()},1800);
   }else setTimeout(run,350);
  }catch(e){w.close();console.error(e);alert('No se pudo generar el documento: '+(e.message||e))}
 }
@@ -179,7 +216,7 @@ function enhance(){
   const claim=no.textContent.trim();if(!claim)return;
   const b=document.createElement('button');
   b.type='button';b.className='btn ghost';b.dataset.solePrint='1';b.textContent='Generar PDF';
-  b.title='Documento PDF de la liquidación guardada; no modifica el registro ni abre la edición';
+  b.title='Genera el informe oficial en el idioma registrado, sin guardar modificaciones';
   b.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();pdf(claim)});
   actions.insertBefore(b,actions.firstChild);
  });
