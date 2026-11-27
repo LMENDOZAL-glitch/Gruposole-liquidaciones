@@ -674,7 +674,7 @@
    const duplicate=used.has(id)&&!currentEditing;
    field.setCustomValidity(duplicate?'Esta liquidación ya existe.':'');
    hint.style.color=duplicate?'#af2630':'#356c53';
-   if(duplicate)hint.textContent='Este correlativo ya está registrado. No se puede duplicar.';
+   if(duplicate){const origin=typeof window.soleDiagnosticarCorrelativo==='function'?window.soleDiagnosticarCorrelativo(id):'';hint.textContent='Este correlativo está reservado. '+(origin||'Revisa los registros y el histórico antes de reutilizarlo.');hint.style.whiteSpace='pre-line';}
    else if(missing(field.value))hint.textContent='Se asignará '+available(year(inputId==='pcClaimNo'?$('pcDate')?.value:$('boxPeriod')?.value),'SN')+' automáticamente.';
    else if(currentEditing)hint.textContent='Editando liquidación existente.';
    else hint.textContent='Número disponible.';
