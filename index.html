@@ -3910,6 +3910,36 @@ body{background:#f4f7fb!important}.rail,.hero{display:none!important}.shell{disp
   const _manual=pcManualReworkCosts;
   pcManualReworkCosts=function(){
     if(!pcHistoricalCostLock?.enabled)return _manual();
+    // Importes de reproceso cotejados contra los PDF oficiales enviados al proveedor.
+    // Solo 2026-019 y 2026-023: nunca modificar 2026-018 ni datos de Firebase.
+    // Mantener los importes originales aunque el catálogo de costos actual haya cambiado.
+    const historicalClaim=String(pcHistoricalCostLock.claim||'').trim();
+    const historicalSupplier=String($('pcSupplier')?.value||'').toUpperCase();
+    const historicalTotals={'2026-019':2172.30,'2026-023':507.60};
+    if(!pcHistoricalCostLock.manualOverride &&
+       Object.prototype.hasOwnProperty.call(historicalTotals,historicalClaim) &&
+       historicalSupplier.includes('CHINABEST') && historicalSupplier.includes('VATTI')){
+      const fx=Number($('pcFx')?.value)||Number(cfg.fx)||1;
+      const amount=historicalTotals[historicalClaim];
+      const original=_manual();
+      // Reutilizar el desglose original cuando coincide; no sustituirlo por costos de hoy.
+      const stored=Number(pcHistoricalCostLock.reworkUsd)||0;
+      if(Math.abs(stored-amount)<0.015 && Math.abs(original.totalUsd-amount)<0.015) return original;
+      const detail=historicalClaim==='2026-019'
+        ? {forkliftUsd:81.17,qualityUsd:238.81,storageUsd:1033.06,directReworkUsd:687.92,reworkCostUsd:529.17,indirectUsd:158.75,consumablesUsd:131.34,reprocessedQty:805,area:53.65,months:3}
+        : {forkliftUsd:0,qualityUsd:0,storageUsd:0,directReworkUsd:507.60,reworkCostUsd:507.60,indirectUsd:0,consumablesUsd:0,reprocessedQty:0,area:0,months:1};
+      const rows=[
+        ['Traslado interno (histórico)', '',detail.forkliftUsd*fx,detail.forkliftUsd],
+        ['Supervisión de Calidad (histórico)','',detail.qualityUsd*fx,detail.qualityUsd],
+        ['Almacenamiento adicional (histórico)','',detail.storageUsd*fx,detail.storageUsd],
+        ['Reproceso directo (histórico)','',detail.directReworkUsd*fx,detail.directReworkUsd],
+        ['Insumos (histórico)','',detail.consumablesUsd*fx,detail.consumablesUsd]
+      ];
+      return {...original,...detail,rows,totalUsd:amount,totalPen:amount*fx,externalTransportUsd:0,
+        consumablesPen:detail.consumablesUsd*fx,areaPerPallet:1.96,
+        // El importe de cada partida se conserva como aparece en el informe oficial.
+        historicalReference:'PDF original '+historicalClaim};
+    }
     if(pcHistoricalCostLock.snapshot&&!pcHistoricalCostLock.manualOverride){let old=cfg;try{cfg={...cfg,...deep(pcHistoricalCostLock.snapshot),consumables:deep(pcHistoricalCostLock.snapshot.consumables||cfg.consumables||[]),warehouses:deep(pcHistoricalCostLock.snapshot.warehouses||cfg.warehouses||[]),productLines:deep(pcHistoricalCostLock.snapshot.productLines||cfg.productLines||[]),productPallets:deep(pcHistoricalCostLock.snapshot.productPallets||cfg.productPallets||[])};return _manual()}finally{cfg=old}}
     let usd=+pcHistoricalCostLock.reworkUsd||0,fx=+$('pcFx')?.value||cfg.fx||1,penv=Number.isFinite(+pcHistoricalCostLock.reworkPen)?+pcHistoricalCostLock.reworkPen:usd*fx;
     return {rows:[[pcHistoricalCostLock.manualOverride?'Costo histórico ajustado manualmente':'Costo histórico protegido',pcHistoricalCostLock.manualOverride?'Valor editable · pendiente de guardar':'Importe guardado en la liquidación',penv,usd]],totalPen:penv,totalUsd:usd,externalTransportUsd:0,forkliftUsd:0,qualityUsd:0,storageUsd:0,directReworkUsd:usd,reprocessedQty:0,costHourUsd:0,productRatio:0,manHours:0,reworkCostUsd:usd,indirectUsd:0,consumablesPen:0,consumablesUsd:0,pallets:+$('pcPallets')?.value||0,area:0,trips:0,externalQty:0,months:+$('pcStorageMonths')?.value||0,qDays:+$('pcQualityDays')?.value||0,operators:+$('pcOperators')?.value||0,hoursPerOperator:+$('pcHours')?.value||0};
