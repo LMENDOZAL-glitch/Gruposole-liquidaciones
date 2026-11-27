@@ -941,6 +941,12 @@
     if(d.data()?.archivadoV124)continue;
     cloud.set(norm(d.id),{ref:d.ref,raw:d.data(),data:fromFirestore(d.data())});
   }
+  // Nunca limpiar si las cuatro liquidaciones no están ya recuperadas con ficha visible.
+  for(const keepId of keep){
+    const inCloud=cloud.get(keepId)?.data;
+    if(!inCloud?.registro||inCloud.eliminada)
+      throw Error('Primero pulsa «1. Recuperar 001, 002, 003 y 016 con notas». Falta '+keepId+'. No se eliminó nada.');
+  }
   const hidden=new Set([...deletedClaims].map(norm));
   for(const [id,r] of cloud)if(r.data?.eliminada)hidden.add(id);
   const remove=[...hidden].filter(id=>!keep.has(id)).sort();
