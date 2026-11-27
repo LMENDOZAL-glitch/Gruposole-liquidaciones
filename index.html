@@ -2796,6 +2796,11 @@ function translateSettlementDocV105(s,lang){
 }
 function generateReturnSupplierDocument(asPdf=false){
   if(!productClaimLines.length){alert('Agrega al menos un producto.');return}
+  // Abrir la pestaña al inicio del clic evita que Chrome bloquee el PDF mientras se compone el informe.
+  const __solePrintWin = asPdf ? window.open('','_blank') : null;
+  if(asPdf && !__solePrintWin){ alert('El navegador bloqueó la ventana del PDF. Habilita ventanas emergentes para Grupo Sole.'); return; }
+  try {
+
   let claim=window.soleSnFix?window.soleSnFix($('pcClaimNo').value,$('pcDate')?.value):($('pcClaimNo').value||nextClaim()),supplier=$('pcSupplier').value||'',brand=$('pcBrand').value||'SOLE',
       date=$('pcDate').value||'',problem=$('pcProblem')?.value||'',prepared=$('pcPreparedBy')?.value||cfg.preparedBy||'',
       approved=cfg.approvedBy||'CONTROL DE CALIDAD',lang=settlementLanguageV105(),fx=+$('pcFx')?.value||cfg.fx||1,extra=+$('pcExtraUsd')?.value||0,extraConcept=$('pcExtraConcept')?.value||'Servicios adicionales',warrantyQty=warrantyServiceQtyV108(),warrantyUnitPen=+$('pcWarrantyPen')?.value||0,warrantyPen=warrantyQty*warrantyUnitPen,warrantyUsd=warrantyPen/fx,
@@ -2870,12 +2875,28 @@ function generateReturnSupplierDocument(asPdf=false){
     +'<div class="note"><b>OBSERVATIONS / AGREEMENT</b><div>'+esc($('pcNotes')?.value||'-')+'</div></div>'
     +'</div></body></html>';
   doc=brandbookEnhanceDocV106(doc);doc=translateSettlementDocV105(doc,lang);
-  if(asPdf){let w=window.open('','_blank');if(!w){alert('Habilita ventanas emergentes para generar el PDF.');return}w.document.open();w.document.write(doc);w.document.close();setTimeout(()=>{w.focus();w.print()},450);return}
+  if(asPdf){
+    __solePrintWin.document.open();__solePrintWin.document.write(doc);__solePrintWin.document.close();
+    setTimeout(()=>{try{if(!__solePrintWin.closed){__solePrintWin.focus();__solePrintWin.print()}}catch(e){console.warn('La impresión automática fue bloqueada; utiliza el botón de impresión en la pestaña.',e)}},650);
+    return true;
+  }
   download(baseName+'.html',doc);
+  return true;
+  } catch(e) {
+    console.error('Error generando informe oficial: '+String(e?.message||e),e);
+    if(__solePrintWin&&!__solePrintWin.closed)try{__solePrintWin.close()}catch(_){}
+    alert('No se pudo generar el informe oficial: '+(e?.message||e));
+    return false;
+  }
 }
 function generateSupplierClaimDocument(asPdf=false){
   if(isReturnClaimV102()){generateReturnSupplierDocument(asPdf);return}
   if(!productClaimLines.length){alert('Agrega al menos un producto/código.');return}
+  // Abrir la pestaña al inicio del clic evita que Chrome bloquee el PDF mientras se compone el informe.
+  const __solePrintWin = asPdf ? window.open('','_blank') : null;
+  if(asPdf && !__solePrintWin){ alert('El navegador bloqueó la ventana del PDF. Habilita ventanas emergentes para Grupo Sole.'); return; }
+  try {
+
   let claim=window.soleSnFix?window.soleSnFix($('pcClaimNo').value,$('pcDate')?.value):($('pcClaimNo').value||nextClaim()),supplier=$('pcSupplier').value||'',brand=$('pcBrand').value||'',date=$('pcDate').value||'',problem=$('pcProblem')?.value||'',fx=+$('pcFx').value||cfg.fx||1,
       rw=pcManualReworkCosts(),replacement=productClaimLines.reduce((a,l)=>a+pcLineSubtotal(l),0),extra=+$('pcExtraUsd')?.value||0,total=rw.totalUsd+replacement+extra,
       files=[...new Set(productClaimLines.map(x=>x.file).filter(Boolean))],prepared=$('pcPreparedBy')?.value||cfg.preparedBy||'',approved=cfg.approvedBy||'CONTROL DE CALIDAD',lang=settlementLanguageV105();
@@ -2939,8 +2960,19 @@ function generateSupplierClaimDocument(asPdf=false){
 
   htmlDoc=brandbookEnhanceDocV106(htmlDoc);htmlDoc=translateSettlementDocV105(htmlDoc,lang);
   let baseName=[settlementFilePrefixV105(lang),supplier||'SUPPLIER',claim].map(cleanFilePart).join('_');
-  if(asPdf){let w=window.open('','_blank');if(!w){alert('El navegador bloqueó la ventana del PDF. Habilita ventanas emergentes para este archivo.');return}w.document.open();w.document.write(htmlDoc);w.document.close();setTimeout(()=>{w.focus();w.print()},500);return}
+  if(asPdf){
+    __solePrintWin.document.open();__solePrintWin.document.write(htmlDoc);__solePrintWin.document.close();
+    setTimeout(()=>{try{if(!__solePrintWin.closed){__solePrintWin.focus();__solePrintWin.print()}}catch(e){console.warn('La impresión automática fue bloqueada; utiliza el botón de impresión en la pestaña.',e)}},650);
+    return true;
+  }
   download(baseName+'.html',htmlDoc);
+  return true;
+  } catch(e) {
+    console.error('Error generando informe oficial: '+String(e?.message||e),e);
+    if(__solePrintWin&&!__solePrintWin.closed)try{__solePrintWin.close()}catch(_){}
+    alert('No se pudo generar el informe oficial: '+(e?.message||e));
+    return false;
+  }
 }
 function supplierCompareKey(v){return String(v||'').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^A-Z0-9]/g,'')}
 function syncActiveClaimCatalog(){
