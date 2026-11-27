@@ -41,6 +41,46 @@ function explainId(id){
  return entries.map(x=>x.type+': '+x.detail).join('\n');
 }
 window.soleDiagnosticarCorrelativo=explainId;
+/* Traducción visual al español: el texto original se conserva en la base.
+   Términos técnicos aprobados para los casos conocidos; no se inventan traducciones. */
+function enEspanol(raw){
+ const original=String(raw||'').trim();
+ if(!original)return '';
+ const k=original.toLowerCase().replace(/[.,;:]+$/,'').replace(/\s+/g,' ');
+ const frases=[
+  [/\bignition pin fractured at the joint\b/gi,'Pin de encendido fracturado en la unión'],
+  [/\bpoor coating finish on bases\b/gi,'Acabado deficiente del recubrimiento de las bases'],
+  [/\bpoor coating finish\b/gi,'Acabado deficiente del recubrimiento'],
+  [/\bignition pin\b/gi,'pin de encendido'],
+  [/\bignition electrode\b/gi,'electrodo de encendido'],
+  [/\bno electric arc\b/gi,'no se genera el arco eléctrico'],
+  [/\bno spark\b/gi,'no se genera chispa'],
+  [/\bwater leakage\b/gi,'fuga de agua'],
+  [/\bgas leakage\b/gi,'fuga de gas'],
+  [/\bincorrect wiring\b/gi,'cableado incorrecto'],
+  [/\bwrong wiring\b/gi,'cableado incorrecto'],
+  [/\bcracked glass\b/gi,'vidrio fisurado'],
+  [/\bbroken glass\b/gi,'vidrio roto'],
+  [/\bscratches\b/gi,'rayaduras'],
+  [/\bdeformation\b/gi,'deformación'],
+  [/\bdiscoloration\b/gi,'decoloración'],
+  [/\bbroken\b/gi,'roto'],
+  [/\bfractured\b/gi,'fracturado'],
+  [/\bdetached\b/gi,'desprendido'],
+  [/\bmissing\b/gi,'faltante'],
+  [/\brust\b/gi,'óxido']
+ ];
+ if(!/[a-z]/i.test(k))return original;
+ let translated=original,recognized=false;
+ for(const [pattern,replacement] of frases){
+   if(pattern.test(translated)){translated=translated.replace(pattern,replacement);recognized=true}
+ }
+ // No mostrar una traducción parcial como si fuera una descripción técnica verificada.
+ const rest=translated.replace(/\b(?:pin de encendido|electrodo de encendido|no se genera el arco eléctrico|no se genera chispa|fuga de agua|fuga de gas|cableado incorrecto|vidrio fisurado|vidrio roto|rayaduras|deformación|decoloración|roto|fracturado|desprendido|faltante|óxido|Acabado deficiente del recubrimiento de las bases|Acabado deficiente del recubrimiento|Pin de encendido fracturado en la unión)\b/gi,'').replace(/[0-9\s.,;:/()\-–]+/g,'').trim();
+ if(recognized && (!rest || !/[a-z]{3,}/i.test(rest)))return translated;
+ if(/^[^\x00-\x7F]*[\u00C0-\u024F]/.test(original)||/\b(?:falla|defecto|fisura|rotura|fuga|rayadura|desprendimiento|problema|daño|soldadura|encendido)\b/i.test(original))return original;
+ return 'Traducción al español pendiente de validar';
+}
 function defectList(c){
  let rows=Array.isArray(c?.rows)?c.rows:[];
  let lines=Array.isArray(c?.builderSnapshot?.lines)?c.builderSnapshot.lines:[];
@@ -67,18 +107,20 @@ function decorateCard(card){
  const label=document.createElement('b');label.textContent='Motivo del reclamo / defecto del reproceso';
  heading.append(label);
  const general=document.createElement('p');general.className='sole-motivos-general';
- general.textContent=data.general?'Motivo general: '+data.general:
+ general.textContent=data.general?'Motivo general: '+enEspanol(data.general):
    'Motivo general no registrado. Completa el defecto en «Editar liquidación» para que tu jefa pueda identificarlo.';
  section.append(heading,general);
+ if(data.general)general.title='Texto original: '+data.general;
  if(data.result.length){
   const table=document.createElement('table');table.className='sole-motivos-table';
   const th=document.createElement('thead');th.innerHTML='<tr><th>CÓDIGO</th><th>FILE</th><th>DEFECTO OBSERVADO</th></tr>';table.append(th);
   const tb=document.createElement('tbody');
   data.result.forEach(r=>{
     const tr=document.createElement('tr');
-    [r.code||'—',r.file||'—',r.defect|| (data.general?'Ver motivo general indicado arriba':'Defecto específico pendiente de registrar')].forEach((v,i)=>{
+    [r.code||'—',r.file||'—',r.defect?enEspanol(r.defect): (data.general?'Ver motivo general indicado arriba':'Defecto específico pendiente de registrar')].forEach((v,i)=>{
       const td=document.createElement('td');td.textContent=v;
-      if(i===2&&!r.defect)td.className='sole-motivos-missing';
+      if(i===2&&(!r.defect||enEspanol(r.defect).startsWith('Traducción al español pendiente')))td.className='sole-motivos-missing';
+      if(i===2&&r.defect)td.title='Texto original: '+r.defect;
       tr.append(td);
     });tb.append(tr);
   });table.append(tb);section.append(table);
