@@ -98,8 +98,18 @@ function install(){
  details.append(table);
  const tools=document.createElement('div');tools.className='sole-hidden-admin-tools';
  tools.style.cssText='display:flex;flex-wrap:wrap;gap:10px;margin:12px 0;padding:12px;background:#eef4f8;border-radius:9px';
+ const restoreFour=document.createElement('button');restoreFour.type='button';restoreFour.className='btn primary';
+ restoreFour.textContent='1. Recuperar 001, 002, 003 y 016 con notas';
+ restoreFour.onclick=async()=>{
+  if(!document.documentElement.classList.contains('sole-is-admin')){alert('Solo administrador.');return}
+  if(typeof window.soleGestionOcultos?.recuperarCuatro!=='function'){alert('Actualiza la página para cargar la recuperación.');return}
+  restoreFour.disabled=true;restoreFour.textContent='Comprobando el respaldo histórico…';
+  try{const result=await window.soleGestionOcultos.recuperarCuatro();render();alert(result)}
+  catch(e){alert('NO SE RESTAURARON LOS DATOS: '+(e?.message||e));console.error(e)}
+  finally{restoreFour.disabled=false;restoreFour.textContent='1. Recuperar 001, 002, 003 y 016 con notas'}
+ };
  const bulk=document.createElement('button');bulk.type='button';bulk.className='btn primary';
- bulk.textContent='Conservar 2026-001 / 002 / 003 / 016 y limpiar los demás ocultos';
+ bulk.textContent='2. Limpiar los demás registros ocultos';
  bulk.onclick=async()=>{
   if(!document.documentElement.classList.contains('sole-is-admin')){
    alert('Solo el administrador puede realizar esta operación.');return;
@@ -112,7 +122,7 @@ function install(){
    const res=await window.soleGestionOcultos.limpiarConservando();
    render();alert(res);
   }catch(e){alert('No se completó la operación. No vuelvas a intentarla sin revisar este error:\n'+(e?.message||e));console.error(e)}
-  finally{bulk.disabled=false;bulk.textContent='Conservar 2026-001 / 002 / 003 / 016 y limpiar los demás ocultos'}
+  finally{bulk.disabled=false;bulk.textContent='2. Limpiar los demás registros ocultos'}
  };
  const notes=document.createElement('button');notes.type='button';notes.className='btn ghost';
  notes.textContent='Revisar notas históricas de 2026-001';
@@ -127,7 +137,7 @@ function install(){
   }catch(e){alert('No se pudieron recuperar las notas históricas: '+(e?.message||e))}
   finally{notes.disabled=false}
  };
- tools.append(notes,bulk);
+ tools.append(restoreFour,notes,bulk);
  details.insertBefore(tools,table);
  list.parentElement.insertBefore(details,list);
  details.addEventListener('toggle',()=>{if(details.open)render()});
