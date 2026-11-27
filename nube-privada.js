@@ -726,6 +726,114 @@
   refresh();
  }
 
+ /* Administración confirmada de registros ocultos. No cambiar datos antes de la confirmación de Firestore. */
+ function hiddenCloudReady(){
+  if(role!=='Administrador'||!user||!ready||!claimsReady||!seedsReady)
+   throw Error('Se requiere una sesión de Administrador con la nube totalmente cargada.');
+  if(dirty||busy||conflict)throw Error('Hay cambios pendientes o un conflicto. Revisa el estado de sincronización antes de continuar.');
+ }
+ function hiddenSafeId(id){
+  id=norm(id);
+  if(!/^20\d{2}-\d{3}(?:SN)?$/.test(id))throw Error('Número de liquidación inválido.');
+  return id;
+ }
+ function downloadHiddenBackup(id,body){
+  const blob=new Blob([JSON.stringify(body,null,2)],{type:'application/json'});
+  const a=document.createElement('a'),url=URL.createObjectURL(blob);
+  a.href=url;a.download='SOLE_RESPALDO_PREVIO_ELIMINAR_'+id+'.json';document.body.append(a);
+  a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1200);
+ }
+ async function hiddenCloudAction(id,action){
+  hiddenCloudReady();id=hiddenSafeId(id);
+  if(action!=='restore'&&action!=='delete')throw Error('Acción inválida.');
+  const ref=db.collection(COLLECTION).doc(id);
+  const seedRef=db.collection(SEEDS_COLLECTION).doc('HIST');
+  if(action==='restore'){
+   // El botón anterior solo modificaba localStorage. Firestore devolvía el estado oculto.
+   const snapshot=await ref.get({source:'server'});
+   const prior=snapshot.exists?fromFirestore(snapshot.data()):null;
+   if(!prior && !([...deletedClaims].some(k=>norm(k)===id)))
+     throw Error('No hay una marca de ocultamiento para restaurar.');
+   const currentRev=snapshot.exists?String(snapshot.data().revision||''):null;
+   const revision=(self.crypto?.randomUUID?.()||String(Date.now()));
+   busy=true;
+   try{
+    await db.runTransaction(async tx=>{
+     const cur=await tx.get(ref);
+     if((currentRev===null&&cur.exists)||(currentRev!==null&&(!cur.exists||String(cur.data()?.revision||'')!==currentRev)))
+       throw Error('El expediente cambió en otro equipo. Recarga antes de restaurar.');
+     const payload=cur.exists?cur.data():toFirestore({claim:id,registro:null,edicion:{},compensaciones:[],eliminada:false});
+     tx.set(ref,{...payload,claim:id,eliminada:false,revision,version:126,
+       autor:user.uid,actualizado:firebase.firestore.FieldValue.serverTimestamp()});
+    });
+    // Refrescar desde la fuente real antes de comunicar éxito.
+    const fresh=await db.collection(COLLECTION).get({source:'server'});
+    busy=false;receive(fresh);
+    if(deletedClaims.has(id))throw Error('La nube sigue marcando el registro como oculto. Verifica su estado.');
+    return 'La liquidación '+id+' fue restaurada y confirmada en Firebase.';
+   }finally{busy=false}
+  }
+  // Eliminar definitivamente: exige respaldo local descargado + correlativo exacto.
+  const [record,seed]=await Promise.all([ref.get({source:'server'}),seedRef.get({source:'server'})]);
+  const raw=record.exists?record.data():null,unpacked=raw?fromFirestore(raw):null;
+  const history=seed.exists?JSON.parse(seed.data().json||'[]'):[];
+  if(!Array.isArray(history))throw Error('No se puede verificar la base histórica. Cancelado.');
+  const historicalRows=history.filter(x=>norm(x?.claim)===id);
+  if(!record.exists&&!historicalRows.length)
+    throw Error('Solo se encontró una referencia local sin documento verificable. No hay datos seguros que eliminar de Firebase.');
+  const linkedComp=unpacked?.compensaciones||[];
+  if(linkedComp.length||compensations.some(x=>norm(x.claim)===id))
+    throw Error('Esta liquidación tiene compensaciones. Debes revisarlas antes de autorizar la eliminación definitiva.');
+  if(![...deletedClaims].some(x=>norm(x)===id))
+    throw Error('Solo es posible eliminar desde el listado de registros OCULTOS. Oculta primero una liquidación activa si corresponde.');
+  const entered=prompt('ELIMINACIÓN DEFINITIVA DE DATOS\n\nSe borrará el expediente '+id+' de Firebase y, si existe, de la base histórica compartida. El número podrá quedar disponible y esta acción no se podrá deshacer desde la plataforma.\n\nPrimero se descargará un respaldo individual.\n\nEscribe exactamente '+id+' para continuar:');
+  if(entered!==id)return 'Operación cancelada: no se borró ningún dato.';
+  // Backup antes de hacer cambios: no tocar la nube si el respaldo falla.
+  downloadHiddenBackup(id,{formato:'SOLE_RESPALDO_PREVIO_ELIMINACION_V1',id,
+   fecha:new Date().toISOString(),documentoNube:raw,registro:unpacked,
+   filasHistoricas:historicalRows,registrosRelacionados:(localClaims||[]).filter(x=>norm(x.claim)===id)});
+  if(!confirm('Última confirmación: ¿eliminar DEFINITIVAMENTE '+id+' de los expedientes y del histórico de Firebase?'))
+   return 'Operación cancelada: se descargó un respaldo, pero no se borró ningún dato.';
+  const recordRev=record.exists?String(raw?.revision||''):null;
+  const seedJson=seed.exists?String(seed.data()?.json||''):'';
+  busy=true;
+  try{
+   await db.runTransaction(async tx=>{
+    const snapshots=await Promise.all([tx.get(ref),tx.get(seedRef)]);
+    const current=snapshots[0],currentSeed=snapshots[1];
+    if((recordRev===null&&current.exists)||(recordRev!==null&&(!current.exists||String(current.data()?.revision||'')!==recordRev)))
+      throw Error('El expediente cambió mientras lo revisabas. No se eliminó.');
+    if(historicalRows.length && (!currentSeed.exists||String(currentSeed.data()?.json||'')!==seedJson))
+      throw Error('El histórico cambió mientras lo revisabas. No se eliminó.');
+    if(current.exists)tx.delete(ref);
+    if(historicalRows.length){
+     const updated=history.filter(x=>norm(x?.claim)!==id);
+     tx.update(seedRef,{json:JSON.stringify(updated),actualizado:firebase.firestore.FieldValue.serverTimestamp(),autor:user.uid});
+    }
+   });
+   // Quitar referencias locales una vez que la transacción haya sido confirmada.
+   applying=true;
+   try{
+    localClaims=localClaims.filter(x=>norm(x.claim)!==id);
+    Object.keys(claimEdits||{}).forEach(k=>{if(norm(k)===id)delete claimEdits[k]});
+    compensations=compensations.filter(x=>norm(x.claim)!==id);
+    [...deletedClaims].forEach(k=>{if(norm(k)===id)deletedClaims.delete(k)});
+    HIST=HIST.filter(x=>norm(x.claim)!==id);
+    localStorage.setItem('SOLE_QA_LOCAL_CLAIMS_V1',JSON.stringify(localClaims));
+    localStorage.setItem('SOLE_QA_CLAIM_EDITS_V13',JSON.stringify(claimEdits));
+    localStorage.setItem('SOLE_QA_COMP_V1',JSON.stringify(compensations));
+    localStorage.setItem('SOLE_QA_CLAIM_DELETED_V16',JSON.stringify([...deletedClaims]));
+   }finally{applying=false}
+   const fresh=await db.collection(COLLECTION).get({source:'server'});
+   busy=false;receive(fresh);repaint();
+   return 'Eliminación confirmada en Firebase: '+id+'. Conserva el respaldo descargado.';
+  }finally{busy=false}
+ }
+ window.soleGestionOcultos={
+   restaurar:id=>hiddenCloudAction(id,'restore'),
+   eliminar:id=>hiddenCloudAction(id,'delete'),
+   get estado(){return {ready,rol:role,busy,dirty,conflict}}
+ };
  function wireControls(){
   $('soleLoginForm').addEventListener('submit',async e=>{
    e.preventDefault();
