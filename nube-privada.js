@@ -607,6 +607,125 @@
    window.__soleCalculoHistorico018=true;
  }
 
+
+ // Numeración única entre Productos/Cajas, incluye los números reservados
+ // por documentos históricos, editados, eliminados y sincronizados de Firestore.
+ function instalarControlCorrelativos(){
+  if(window.__soleCorrelativosV1 || typeof window.nextClaim!=='function'
+     || typeof window.saveConsolidatedProductClaim!=='function'
+     || typeof window.saveBoxClaim!=='function')return;
+  const normalize=id=>{
+   const raw=String(id==null?'':id).trim().toUpperCase().replace(/\s+/g,'');
+   const m=/^(\d{4})-(\d+)(SN)?$/.exec(raw);
+   return m?m[1]+'-'+String(Number(m[2])).padStart(3,'0')+(m[3]||''):raw;
+  };
+  const missing=s=>!normalize(s) || /^(?:S\/N|SN|SINN[ÚU]MERO|SINNRO\.?|N\/A|-)$/.test(normalize(s));
+  const year=date=>{
+   const m=String(date||'').match(/^(20\d{2})-/);
+   return m?m[1]:String(new Date().getFullYear());
+  };
+  function ids(){
+   const set=new Set();
+   const add=id=>{const x=normalize(id);if(x&&!missing(x))set.add(x)};
+   for(const id of saved.keys())add(id);
+   for(const c of (Array.isArray(HIST)?HIST:[]))add(c?.claim);
+   for(const c of (Array.isArray(localClaims)?localClaims:[]))add(c?.claim);
+   for(const id of Object.keys(claimEdits||{}))add(id);
+   for(const id of (deletedClaims||[]))add(id);
+   for(const c of (compensations||[]))add(c?.claim);
+   return set;
+  }
+  function available(y,suffix=''){
+   const used=ids();
+   for(let i=1;i<100000;i++){
+    const id=y+'-'+String(i).padStart(3,'0')+suffix;
+    if(!used.has(id))return id;
+   }
+   throw Error('No se encontró correlativo disponible.');
+  }
+  let editingProduct=null;
+  const oldNext=window.nextClaim;
+  window.nextClaim=function(){return available(String(new Date().getFullYear()))};
+  const oldNew=window.newProductClaim;
+  if(typeof oldNew==='function')window.newProductClaim=function(){
+   editingProduct=null;
+   const output=oldNew.apply(this,arguments);
+   refresh();
+   return output;
+  };
+  const oldEdit=window.editProductClaimFull;
+  if(typeof oldEdit==='function')window.editProductClaimFull=function(id){
+   const output=oldEdit.apply(this,arguments);
+   if($('pcClaimNo') && normalize($('pcClaimNo').value)===normalize(id))
+      editingProduct=normalize(id);
+   refresh();
+   return output;
+  };
+  function review(inputId,isEditing){
+   const field=$(inputId);
+   if(!field)return;
+   const id=normalize(field.value);
+   const parent=field.parentElement;if(!parent)return;
+   let hint=parent.querySelector('[data-sole-correlativo]');
+   if(!hint){hint=document.createElement('small');hint.dataset.soleCorrelativo='1';
+     hint.style.cssText='display:block;margin-top:4px;font-size:12px;font-weight:600';parent.appendChild(hint)}
+   const used=ids();
+   const currentEditing=isEditing&&editingProduct===id;
+   const duplicate=used.has(id)&&!currentEditing;
+   field.setCustomValidity(duplicate?'Esta liquidación ya existe.':'');
+   hint.style.color=duplicate?'#af2630':'#356c53';
+   if(duplicate)hint.textContent='Este correlativo ya está registrado. No se puede duplicar.';
+   else if(missing(field.value))hint.textContent='Se asignará '+available(year(inputId==='pcClaimNo'?$('pcDate')?.value:$('boxPeriod')?.value),'SN')+' automáticamente.';
+   else if(currentEditing)hint.textContent='Editando liquidación existente.';
+   else hint.textContent='Número disponible.';
+  }
+  function refresh(){review('pcClaimNo',true);review('boxClaimNo',false)}
+  for(const name of ['pcClaimNo','boxClaimNo']){
+   const field=$(name);
+   if(field){field.addEventListener('input',refresh);field.addEventListener('blur',refresh)}
+  }
+  function validateNew(inputId,editingId){
+   if(!ready||busy||conflict||dirty){
+    alert('No se puede crear otra liquidación mientras hay cambios sin sincronizar. Comprueba el guardado en Firebase.');
+    return false;
+   }
+   const field=$(inputId);if(!field)return false;
+   const raw=field.value;
+   const date=inputId==='pcClaimNo'?$('pcDate')?.value:$('boxPeriod')?.value;
+   const id=missing(raw)?available(year(date),'SN'):normalize(raw);
+   if(!/^[A-Z0-9._-]{1,120}$/.test(id)){
+    alert('Número de liquidación no válido. Usa AAAA-001 o S/N.');
+    field.focus();return false;
+   }
+   const editing=normalize(editingId||'');
+   if(editing && id!==editing){
+    alert('Estás editando la liquidación '+editing+'. No cambies su correlativo desde esta pantalla: podría crear otra liquidación y dejar la original. Conserva el número y guarda.');
+    field.focus();return false;
+   }
+   if(ids().has(id) && id!==editing){
+    alert('La liquidación '+id+' ya existe. No se guardó ni se reemplazó ninguna liquidación.\nSiguiente correlativo disponible: '+available(year(date)));
+    field.focus();refresh();return false;
+   }
+   field.value=id;
+   review(inputId,inputId==='pcClaimNo');
+   return true;
+  }
+  const oldSaveProduct=window.saveConsolidatedProductClaim;
+  window.saveConsolidatedProductClaim=function(){
+   if(!validateNew('pcClaimNo',editingProduct))return;
+   return oldSaveProduct.apply(this,arguments);
+  };
+  const oldSaveBox=window.saveBoxClaim;
+  window.saveBoxClaim=function(){
+   if(!validateNew('boxClaimNo',null))return;
+   return oldSaveBox.apply(this,arguments);
+  };
+  // La transacción de nube-privada.js mantiene el bloqueo definitivo
+  // si dos usuarios eligen el mismo correlativo casi simultáneamente.
+  window.__soleCorrelativosV1=true;
+  refresh();
+ }
+
  function wireControls(){
   $('soleLoginForm').addEventListener('submit',async e=>{
    e.preventDefault();
@@ -643,6 +762,7 @@
   auth.setPersistence(firebase.auth.Auth.Persistence.SESSION).catch(e=>console.warn('Persistencia:',e));
   wireControls();
   habilitarCalculoHistorico018();
+  instalarControlCorrelativos();
   auth.onAuthStateChanged(authChanged,e=>showProblem('Error Firebase Auth: '+e.message));
   window.soleV126Online={get estado(){return{ready,acceso:'privado_corporativo',rol:role,email:user?.email||null,dirty,busy,conflict,error:syncError,cambiosRemotosEnEspera:!!pending,cantidad:saved.size,ultimaRecepcion:lastRemoteAt}},guardar:()=>{dirty=true;return upload()}};
  }catch(e){showProblem('Error de inicialización: '+e.message)}
