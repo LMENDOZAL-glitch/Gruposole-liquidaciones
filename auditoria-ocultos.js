@@ -96,6 +96,39 @@ function install(){
  const table=document.createElement('table');
  table.innerHTML='<thead><tr><th>LIQUIDACIÓN</th><th>PROVEEDOR</th><th>ORIGEN</th><th>MONTO</th><th>ACCIONES</th></tr></thead><tbody></tbody>';
  details.append(table);
+ const tools=document.createElement('div');tools.className='sole-hidden-admin-tools';
+ tools.style.cssText='display:flex;flex-wrap:wrap;gap:10px;margin:12px 0;padding:12px;background:#eef4f8;border-radius:9px';
+ const bulk=document.createElement('button');bulk.type='button';bulk.className='btn primary';
+ bulk.textContent='Conservar 2026-001 / 002 / 003 / 016 y limpiar los demás ocultos';
+ bulk.onclick=async()=>{
+  if(!document.documentElement.classList.contains('sole-is-admin')){
+   alert('Solo el administrador puede realizar esta operación.');return;
+  }
+  if(!window.soleGestionOcultos?.limpiarConservando){
+   alert('Actualiza la página para cargar el administrador de Firebase.');return;
+  }
+  bulk.disabled=true;bulk.textContent='Revisando registros en Firebase…';
+  try{
+   const res=await window.soleGestionOcultos.limpiarConservando();
+   render();alert(res);
+  }catch(e){alert('No se completó la operación. No vuelvas a intentarla sin revisar este error:\n'+(e?.message||e));console.error(e)}
+  finally{bulk.disabled=false;bulk.textContent='Conservar 2026-001 / 002 / 003 / 016 y limpiar los demás ocultos'}
+ };
+ const notes=document.createElement('button');notes.type='button';notes.className='btn ghost';
+ notes.textContent='Revisar notas históricas de 2026-001';
+ notes.onclick=async()=>{
+  if(!window.soleGestionOcultos?.notas001){alert('Actualiza la página.');return}
+  notes.disabled=true;
+  try{
+   const report=await window.soleGestionOcultos.notas001();
+   const pre=details.querySelector('[data-notes001]')||document.createElement('pre');
+   pre.dataset.notes001='1';pre.style.cssText='white-space:pre-wrap;font:12px/1.5 Arial;padding:14px;margin:9px 0;background:#fff;border:1px solid #cbd9e6;border-radius:9px';
+   pre.textContent=report.report;tools.after(pre);
+  }catch(e){alert('No se pudieron recuperar las notas históricas: '+(e?.message||e))}
+  finally{notes.disabled=false}
+ };
+ tools.append(notes,bulk);
+ details.insertBefore(tools,table);
  list.parentElement.insertBefore(details,list);
  details.addEventListener('toggle',()=>{if(details.open)render()});
  render();
