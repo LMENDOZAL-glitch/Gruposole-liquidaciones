@@ -51,22 +51,38 @@ function render(){
   td.append(view);
   if(item.exists){
     const btn=document.createElement('button');btn.type='button';btn.className='btn primary';btn.textContent='Restaurar visibilidad';
-    btn.onclick=()=>{
+    btn.onclick=async()=>{
       if(!document.documentElement.classList.contains('sole-is-admin')){
-       alert('Solo el administrador puede restaurar un registro oculto.');return;
+        alert('Solo el administrador puede restaurar un registro oculto.');return;
       }
-      if(!confirm('¿Volver a mostrar '+item.id+' ('+item.supplier+') en las liquidaciones?\n\nNo se duplicará ni se borrará información. El cambio se sincronizará en Firebase.'))return;
-      if(typeof deletedClaims==='undefined')return;
-      [...deletedClaims].forEach(k=>{if(canonId(k)===item.id)deletedClaims.delete(k)});
-      localStorage.setItem('SOLE_QA_CLAIM_DELETED_V16',JSON.stringify([...deletedClaims]));
+      if(!confirm('¿Restaurar la liquidación '+item.id+' ('+item.supplier+') desde Firebase?'))return;
+      if(typeof window.soleGestionOcultos?.restaurar!=='function'){
+        alert('La conexión de administración no está disponible. Actualiza la página con Ctrl + Shift + R.');return;
+      }
+      btn.disabled=true;btn.textContent='Restaurando…';
       try{
-       if(typeof renderClaims==='function')renderClaims();
-       if(typeof renderHome==='function')renderHome();
-      }catch(err){console.warn('Restauración visual',err)}
-      render();
-      alert('Se solicitó restaurar '+item.id+'. Revisa la lista de productos o cajas cuando finalice la sincronización.');
+        const message=await window.soleGestionOcultos.restaurar(item.id);
+        render();alert(message);
+      }catch(err){alert('NO SE RESTAURÓ: '+(err?.message||err));console.error(err)}
+      finally{btn.disabled=false;btn.textContent='Restaurar visibilidad'}
     };
     td.append(btn);
+    const del=document.createElement('button');del.type='button';del.className='btn danger';
+    del.textContent='Eliminar definitivamente';
+    del.title='Eliminación de Firebase e histórico con copia de seguridad y doble confirmación';
+    del.onclick=async()=>{
+      if(!document.documentElement.classList.contains('sole-is-admin')){
+        alert('Solo el administrador puede eliminar datos.');return;
+      }
+      if(!window.soleGestionOcultos?.eliminar){
+        alert('El módulo de administración no está disponible. Actualiza la página.');return;
+      }
+      del.disabled=true;del.textContent='Verificando…';
+      try{const msg=await window.soleGestionOcultos.eliminar(item.id);render();alert(msg)}
+      catch(err){alert('NO SE ELIMINÓ: '+(err?.message||err));console.error(err)}
+      finally{del.disabled=false;del.textContent='Eliminar definitivamente'}
+    };
+    td.append(del);
   }
   tr.append(td);body.append(tr);
  }
