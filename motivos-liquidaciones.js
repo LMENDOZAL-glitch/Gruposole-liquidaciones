@@ -46,40 +46,36 @@ window.soleDiagnosticarCorrelativo=explainId;
 function enEspanol(raw){
  const original=String(raw||'').trim();
  if(!original)return '';
- const k=original.toLowerCase().replace(/[.,;:]+$/,'').replace(/\s+/g,' ');
- const frases=[
-  [/\bignition pin fractured at the joint\b/gi,'Pin de encendido fracturado en la unión'],
-  [/\bpoor coating finish on bases\b/gi,'Acabado deficiente del recubrimiento de las bases'],
-  [/\bpoor coating finish\b/gi,'Acabado deficiente del recubrimiento'],
-  [/\bignition pin\b/gi,'pin de encendido'],
-  [/\bignition electrode\b/gi,'electrodo de encendido'],
-  [/\bno electric arc\b/gi,'no se genera el arco eléctrico'],
-  [/\bno spark\b/gi,'no se genera chispa'],
-  [/\bwater leakage\b/gi,'fuga de agua'],
-  [/\bgas leakage\b/gi,'fuga de gas'],
-  [/\bincorrect wiring\b/gi,'cableado incorrecto'],
-  [/\bwrong wiring\b/gi,'cableado incorrecto'],
-  [/\bcracked glass\b/gi,'vidrio fisurado'],
-  [/\bbroken glass\b/gi,'vidrio roto'],
-  [/\bscratches\b/gi,'rayaduras'],
-  [/\bdeformation\b/gi,'deformación'],
-  [/\bdiscoloration\b/gi,'decoloración'],
-  [/\bbroken\b/gi,'roto'],
-  [/\bfractured\b/gi,'fracturado'],
-  [/\bdetached\b/gi,'desprendido'],
-  [/\bmissing\b/gi,'faltante'],
-  [/\brust\b/gi,'óxido']
+ // Una descripción ya registrada en español debe permanecer intacta.
+ const spanish=/\b(?:soporte|vidrio|roto|rota|fisura|fractura|fracturado|fuga|agua|gas|encendido|electrodo|pin|dañado|dañada|desprendido|desalineado|mal|deficiente|rayaduras|rayado|óxido|oxidación|soldadura|manchas|empaque|cableado|incorrecto|tornillo|defecto|falla|problema|base|conexión|quemador|funciona|incompleto|incompleta|faltante|reproceso)\b/i;
+ if(spanish.test(original)&&!/\b(?:broken|cracked|leakage|fractured|wrong|poor|missing|rust|scratched|misaligned|damaged|bracket|coating|ignition|wiring|glass|failure)\b/i.test(original))return original;
+ const map=[
+  [/glass (?:support|bracket) broken/gi,'Soporte de vidrio roto'],
+  [/(?:broken|fractured) glass (?:support|bracket)/gi,'Soporte de vidrio roto'],
+  [/glass (?:support|bracket) (?:damaged|fractured)/gi,'Soporte de vidrio dañado'],
+  [/ignition pin fractured at the joint/gi,'Pin de encendido fracturado en la unión'],
+  [/poor coating finish on bases/gi,'Acabado deficiente del recubrimiento de las bases'],
+  [/poor coating finish/gi,'Acabado deficiente del recubrimiento'],
+  [/no electric arc/gi,'No se genera el arco eléctrico'],
+  [/no spark/gi,'No se genera chispa'],
+  [/water leakage/gi,'Fuga de agua'],
+  [/gas leakage/gi,'Fuga de gas'],
+  [/incorrect wiring|wrong wiring/gi,'Cableado incorrecto'],
+  [/cracked glass/gi,'Vidrio fisurado'],
+  [/broken glass/gi,'Vidrio roto'],
+  [/ignition electrode/gi,'Electrodo de encendido'],
+  [/ignition pin/gi,'Pin de encendido'],
+  [/missing screws?/gi,'Tornillo faltante'],
+  [/scratches/gi,'Rayaduras'],
+  [/deformation/gi,'Deformación'],
+  [/rust/gi,'Óxido']
  ];
- if(!/[a-z]/i.test(k))return original;
- let translated=original,recognized=false;
- for(const [pattern,replacement] of frases){
-   if(pattern.test(translated)){translated=translated.replace(pattern,replacement);recognized=true}
+ for(const [rx,es] of map){
+   if(rx.test(original))return original.replace(rx,es);
  }
- // No mostrar una traducción parcial como si fuera una descripción técnica verificada.
- const rest=translated.replace(/\b(?:pin de encendido|electrodo de encendido|no se genera el arco eléctrico|no se genera chispa|fuga de agua|fuga de gas|cableado incorrecto|vidrio fisurado|vidrio roto|rayaduras|deformación|decoloración|roto|fracturado|desprendido|faltante|óxido|Acabado deficiente del recubrimiento de las bases|Acabado deficiente del recubrimiento|Pin de encendido fracturado en la unión)\b/gi,'').replace(/[0-9\s.,;:/()\-–]+/g,'').trim();
- if(recognized && (!rest || !/[a-z]{3,}/i.test(rest)))return translated;
- if(/^[^\x00-\x7F]*[\u00C0-\u024F]/.test(original)||/\b(?:falla|defecto|fisura|rotura|fuga|rayadura|desprendimiento|problema|daño|soldadura|encendido)\b/i.test(original))return original;
- return 'Traducción al español pendiente de validar';
+ // En textos desconocidos conservar la descripción real y marcarla para revisión.
+ // Nunca reemplazar el defecto por una cadena genérica que oculte la información.
+ return original;
 }
 function defectList(c){
  let rows=Array.isArray(c?.rows)?c.rows:[];
@@ -97,35 +93,40 @@ function defectList(c){
 }
 function decorateCard(card){
  if(card.querySelector('[data-sole-motivos]'))return;
- const title=card.querySelector('.claim-record-head b');
- const id=title?.textContent?.trim();if(!id)return;
- const c=claimById(id);if(!c||String(c.claimType||'PRODUCTO').toUpperCase().includes('CAJA'))return;
+ const id=card.querySelector('.claim-record-head b')?.textContent?.trim();
+ if(!id)return;
+ const c=claimById(id);
+ if(!c||String(c.claimType||'PRODUCTO').toUpperCase().includes('CAJA'))return;
  const target=card.querySelector('.claim-record-detail');if(!target)return;
  const data=defectList(c);
- const section=document.createElement('section');section.dataset.soleMotivos='1';section.className='sole-motivos-reproceso';
- const heading=document.createElement('div');heading.className='sole-motivos-head';
- const label=document.createElement('b');label.textContent='Motivo del reclamo / defecto del reproceso';
- heading.append(label);
- const general=document.createElement('p');general.className='sole-motivos-general';
- general.textContent=data.general?'Motivo general: '+enEspanol(data.general):
-   'Motivo general no registrado. Completa el defecto en «Editar liquidación» para que tu jefa pueda identificarlo.';
- section.append(heading,general);
- if(data.general)general.title='Texto original: '+data.general;
- if(data.result.length){
-  const table=document.createElement('table');table.className='sole-motivos-table';
-  const th=document.createElement('thead');th.innerHTML='<tr><th>CÓDIGO</th><th>FILE</th><th>DEFECTO OBSERVADO</th></tr>';table.append(th);
-  const tb=document.createElement('tbody');
-  data.result.forEach(r=>{
-    const tr=document.createElement('tr');
-    [r.code||'—',r.file||'—',r.defect?enEspanol(r.defect): (data.general?'Ver motivo general indicado arriba':'Defecto específico pendiente de registrar')].forEach((v,i)=>{
-      const td=document.createElement('td');td.textContent=v;
-      if(i===2&&(!r.defect||enEspanol(r.defect).startsWith('Traducción al español pendiente')))td.className='sole-motivos-missing';
-      if(i===2&&r.defect)td.title='Texto original: '+r.defect;
-      tr.append(td);
-    });tb.append(tr);
-  });table.append(tb);section.append(table);
- }else{
-  const p=document.createElement('p');p.className='sole-motivos-missing';p.textContent='No hay códigos registrados para identificar el defecto.';section.append(p);
+ const unique=[...new Map(data.result.filter(x=>x.defect).map(r=>{
+   const translated=enEspanol(r.defect);
+   return [translated.toLocaleLowerCase('es'),{text:translated,original:r.defect}];
+ })).values()];
+ const general=data.general?enEspanol(data.general):'';
+ // Evitar repetir el detalle ya existente en la tabla inferior.
+ const section=document.createElement('section');
+ section.dataset.soleMotivos='1';section.className='sole-motivos-reproceso';
+ const heading=document.createElement('b');heading.textContent='Motivo del reproceso';
+ section.append(heading);
+ const content=document.createElement('span');
+ content.className='sole-motivos-short';
+ if(unique.length===1)content.textContent=unique[0].text;
+ else if(unique.length>1)content.textContent=unique.length+' defectos registrados: '+unique.slice(0,3).map(x=>x.text).join(' · ')+(unique.length>3?' · y '+(unique.length-3)+' más':'');
+ else if(general)content.textContent=general;
+ else content.textContent='Pendiente de registrar en Observaciones de la liquidación';
+ section.append(content);
+ const note=String(c?.builderSnapshot?.notes||c?.notes||'').trim();
+ if(note){
+   const p=document.createElement('small');p.textContent='Observación: '+note;
+   section.append(p);
+ }
+ if(unique.length>1){
+   const d=document.createElement('details');d.className='sole-motivos-expand';
+   const sum=document.createElement('summary');sum.textContent='Ver los '+unique.length+' defectos diferentes';
+   const ul=document.createElement('ul');
+   unique.forEach(x=>{const li=document.createElement('li');li.textContent=x.text;li.title='Texto registrado: '+x.original;ul.append(li)});
+   d.append(sum,ul);section.append(d);
  }
  const original=target.querySelector('.claim-detail-table');
  if(original)target.insertBefore(section,original);
@@ -166,7 +167,7 @@ function decorate(){
 function init(){
  if(!document.getElementById('soleMotivosCss')){
   const st=document.createElement('style');st.id='soleMotivosCss';
-  st.textContent='.sole-motivos-reproceso{border:1px solid #d2e1ea;background:#f7fafc;border-radius:10px;padding:12px 14px;margin:10px 0 14px;color:#243e53}.sole-motivos-head{font-size:13px;color:#1b4561}.sole-motivos-general{font-size:12px;margin:7px 0}.sole-motivos-table{width:100%;border-collapse:collapse;font-size:12px}.sole-motivos-table th{text-align:left;background:#e5eef5;padding:8px}.sole-motivos-table td{padding:8px;border-bottom:1px solid #dce5ec;vertical-align:top}.sole-motivos-missing{color:#a05a17;font-weight:600}.sole-origin-diagnostic{border:1px solid #bbcee0;background:#f0f6fa;border-radius:10px;margin:10px 0;padding:14px;color:#29435c}.sole-origin-diagnostic p{font-size:12px;line-height:1.5}';
+  st.textContent='.sole-motivos-reproceso{border:1px solid #d2e1ea;border-left:4px solid #245777;background:#f7fafc;border-radius:8px;padding:12px 14px;margin:10px 0 14px;color:#243e53;display:flex;gap:8px 12px;flex-wrap:wrap;align-items:baseline}.sole-motivos-reproceso>b{font-size:13px;color:#1b4561}.sole-motivos-short{font-size:13px}.sole-motivos-reproceso>small{flex-basis:100%;font-size:11px;color:#526a80}.sole-motivos-expand{flex-basis:100%;font-size:12px}.sole-motivos-expand ul{margin:6px 0}.sole-origin-diagnostic{border:1px solid #bbcee0;background:#f0f6fa;border-radius:10px;margin:10px 0;padding:14px;color:#29435c}.sole-origin-diagnostic p{font-size:12px;line-height:1.5}';
   document.head.append(st);
  }
  const root=$('claimList');
