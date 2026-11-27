@@ -2572,6 +2572,7 @@ function renderProductClaimLines(){
       +'</div>'
       +'<div class="claim-grid claim-grid-main">'
         +'<label class="wide2">DESCRIPCIÓN<input id="pcDesc_'+i+'" value="'+esc(l.description||'')+'" onchange="pcUpdate('+i+',&quot;description&quot;,this.value)" placeholder="Se completa automáticamente al reconocer el código"></label>'
+        +'<label class="wide2">DEFECTO / MOTIVO DEL REPROCESO<textarea rows="2" oninput="pcUpdateSilent('+i+',&quot;defect&quot;,this.value)" placeholder="Describe el defecto real observado en este código">'+esc(l.defect||'')+'</textarea></label>'
         +'<label>CANT. LOTE<input inputmode="numeric" value="'+(+l.qty||0)+'" oninput="pcLotQtyEdit('+i+',this.value)"></label>'
         +'<label>RECUPERADAS<input id="pcRecovered_'+i+'" class="readonly" readonly value="'+Math.max((+l.qty||0)-(+l.importedBadQty||0),0)+'"></label>'
         +'<label>NO RECUPERADAS<input inputmode="numeric" value="'+(+l.importedBadQty||0)+'" oninput="pcImportedBadEdit('+i+',this.value)"></label>'
@@ -6578,5 +6579,6 @@ body.ui-v126 .q129-state option{background:var(--u-surface,#fff);color:var(--u-i
 <script src="consolidado-bloqueados.js" defer></script>
 <script src="pdf-consolidado-bloqueados.js?v=20261127-2" defer></script>
 <script src="repuestos-consolidados.js" defer></script>
+<script src="motivos-liquidaciones.js?v=20261127-1" defer></script>
 <!-- Restauración V124 completada: importador retirado de la interfaz. Se conserva el módulo en el repositorio para respaldo. -->
 </body></html>
