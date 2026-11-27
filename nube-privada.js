@@ -844,9 +844,139 @@
    return 'Eliminación confirmada en Firebase: '+id+'. Conserva el respaldo descargado.';
   }finally{busy=false}
  }
+
+ const KEEP_HIDDEN = Object.freeze(['2026-001','2026-002','2026-003','2026-016']);
+ async function bulkKeepAndClean(){
+  hiddenCloudReady();
+  const keep=new Set(KEEP_HIDDEN);
+  const seedRef=db.collection(SEEDS_COLLECTION).doc('HIST');
+  // Releer todo del servidor, nunca fiarse de una lista del navegador que puede estar desactualizada.
+  const [records,seed]=await Promise.all([
+    db.collection(COLLECTION).get({source:'server'}),
+    seedRef.get({source:'server'})
+  ]);
+  if(!seed.exists)throw Error('No se pudo verificar la base histórica. No se efectuaron cambios.');
+  const history=JSON.parse(seed.data()?.json||'[]');
+  if(!Array.isArray(history))throw Error('La base histórica no tiene formato válido.');
+  const cloud=new Map();
+  for(const d of records.docs){
+    if(d.data()?.archivadoV124)continue;
+    cloud.set(norm(d.id),{ref:d.ref,raw:d.data(),data:fromFirestore(d.data())});
+  }
+  const hidden=new Set([...deletedClaims].map(norm));
+  for(const [id,r] of cloud)if(r.data?.eliminada)hidden.add(id);
+  const remove=[...hidden].filter(id=>!keep.has(id)).sort();
+  const restore=[...keep].filter(id=>hidden.has(id)).sort();
+  const rejected=[];
+  for(const id of remove){
+    const rec=cloud.get(id);
+    if((rec?.data?.compensaciones||[]).length || compensations.some(x=>norm(x.claim)===id)){
+      rejected.push(id+' tiene compensaciones');continue;
+    }
+    if(localClaims.some(x=>norm(x.claim)===id && ![...deletedClaims].some(k=>norm(k)===id))){
+      rejected.push(id+' aparece activo en esta sesión');continue;
+    }
+  }
+  if(rejected.length)throw Error('No se pudo preparar la limpieza por seguridad: '+rejected.join('; ')+'. No se modificó nada.');
+  // Para restaurar, debe haber ficha real; los números sin ficha no se publicarán como liquidaciones ficticias.
+  const restoration=new Map();
+  for(const id of restore){
+    const c=cloud.get(id)?.data;
+    const rows=history.filter(x=>norm(x.claim)===id);
+    const local=localClaims.find(x=>norm(x.claim)===id);
+    const record=c?.registro||local|| (rows.length?{
+      claim:id,claimType:'PRODUCTO',source:'HISTÓRICO',
+      supplier:rows.find(x=>x.supplier)?.supplier||'',
+      status:rows.find(x=>x.status)?.status||'PENDIENTE',
+      amount:Number(rows.find(x=>x.unique)?.uniqueAmount??rows[0].amount??0),
+      observations:rows.find(x=>x.observations)?.observations||'',
+      rows:copy(rows),date:rows.find(x=>x.date)?.date||''
+    }:null);
+    if(!record)throw Error('Falta la ficha de '+id+'. No se modificó nada.');
+    restoration.set(id,record);
+  }
+  const description='RESTAURAR: '+(restore.join(', ')||'ninguna')+'\nELIMINAR DEL HISTÓRICO Y NUBE: '+(remove.join(', ')||'ninguna')+
+    '\n\nCONSERVAR TODOS LOS DEMÁS REGISTROS ACTIVOS.\n\nSe hará una copia de respaldo antes de modificar Firebase.';
+  if(!confirm(description+'\n\n¿Deseas continuar?'))return 'Operación cancelada. No hubo cambios.';
+  const answer=prompt('CONFIRMACIÓN FINAL\n\nEscribe exactamente: LIMPIAR OCULTOS\n\nSe eliminarán los registros ocultos que no deseas conservar. No se eliminarán otras liquidaciones.');
+  if(answer!=='LIMPIAR OCULTOS')return 'Operación cancelada. No hubo cambios.';
+  const payload={formato:'SOLE_RESPALDO_LIMPIEZA_OCULTOS_V1',fecha:new Date().toISOString(),
+    conservar:[...keep],restaurar:restore,eliminar:remove,
+    documentosNube:[...cloud].filter(([id])=>remove.includes(id)||restore.includes(id)).map(([id,v])=>({id,raw:v.raw})),
+    historico:history.filter(x=>remove.includes(norm(x.claim))||restore.includes(norm(x.claim))),
+    notasLocales:restore.map(id=>({id,edicion:claimEdits[id]||{},registro:localClaims.find(x=>norm(x.claim)===id)||null}))};
+  downloadHiddenBackup('LOTE_OCULTOS',payload);
+  // La transacción es atómica: restauración de los elegidos y borrado del resto, o nada.
+  const revision=new Map([...cloud].map(([id,v])=>[id,String(v.raw.revision||'')]));
+  busy=true;
+  try{
+    await db.runTransaction(async tx=>{
+      // Leer primero todos los documentos. Nunca escribir antes de terminar las lecturas.
+      const allRefs=[...new Set([...restore,...remove])];
+      const fetched=await Promise.all(allRefs.map(id=>tx.get(db.collection(COLLECTION).doc(id))));
+      const currentSeed=await tx.get(seedRef);
+      if(!currentSeed.exists || currentSeed.data()?.json!==seed.data()?.json)
+        throw Error('El histórico cambió durante la operación; no se eliminó nada.');
+      fetched.forEach((snap,i)=>{
+        const id=allRefs[i],original=cloud.get(id);
+        if(!!original !== snap.exists || (original && String(snap.data()?.revision||'')!==revision.get(id)))
+          throw Error('El expediente '+id+' cambió mientras se procesaba. No se eliminó nada.');
+      });
+      for(const id of restore){
+        const ref=db.collection(COLLECTION).doc(id),old=cloud.get(id)?.data;
+        const restored={claim:id,registro:restoration.get(id),
+          edicion:old?.edicion||{},compensaciones:old?.compensaciones||[],eliminada:false};
+        tx.set(ref,{...toFirestore(restored),revision:(self.crypto?.randomUUID?.()||Date.now()+'-'+Math.random()),
+          version:126,autor:user.uid,actualizado:firebase.firestore.FieldValue.serverTimestamp()});
+      }
+      for(const id of remove)if(cloud.has(id))tx.delete(db.collection(COLLECTION).doc(id));
+      const keptHistory=history.filter(x=>!remove.includes(norm(x?.claim)));
+      if(keptHistory.length!==history.length)
+        tx.update(seedRef,{json:JSON.stringify(keptHistory),actualizado:firebase.firestore.FieldValue.serverTimestamp(),autor:user.uid});
+    });
+    // No dejar basura local que pueda volver a sincronizarse como un expediente nuevo.
+    applying=true;
+    try{
+      localClaims=localClaims.filter(x=>!remove.includes(norm(x.claim)));
+      for(const k of Object.keys(claimEdits||{}))if(remove.includes(norm(k)))delete claimEdits[k];
+      compensations=compensations.filter(x=>!remove.includes(norm(x.claim)));
+      deletedClaims=new Set([...deletedClaims].filter(x=>!remove.includes(norm(x))&&!restore.includes(norm(x))));
+      HIST=history.filter(x=>!remove.includes(norm(x?.claim)));
+      localStorage.setItem('SOLE_QA_LOCAL_CLAIMS_V1',JSON.stringify(localClaims));
+      localStorage.setItem('SOLE_QA_CLAIM_EDITS_V13',JSON.stringify(claimEdits));
+      localStorage.setItem('SOLE_QA_COMP_V1',JSON.stringify(compensations));
+      localStorage.setItem('SOLE_QA_CLAIM_DELETED_V16',JSON.stringify([...deletedClaims]));
+    }finally{applying=false}
+    const fresh=await db.collection(COLLECTION).get({source:'server'});
+    busy=false;receive(fresh);repaint();
+    return 'OPERACIÓN CONFIRMADA EN FIREBASE.\nRestauradas: '+(restore.join(', ')||'ninguna')+
+      '\nEliminadas: '+(remove.join(', ')||'ninguna')+
+      '\nSe descargó el respaldo del lote.';
+  }finally{busy=false}
+ }
+ async function historicalNotes001(){
+  hiddenCloudReady();
+  const id='2026-001';
+  const seed=await db.collection(SEEDS_COLLECTION).doc('HIST').get({source:'server'});
+  const rows=seed.exists?JSON.parse(seed.data().json||'[]'):[];
+  if(!Array.isArray(rows))throw Error('Histórico no disponible.');
+  const c=cloudClaim001(),supplier=String(c?.supplier||'').trim().toUpperCase();
+  const relevant=rows.filter(x=>norm(x.claim)===id && (!supplier||String(x.supplier||'').trim().toUpperCase()===supplier));
+  const notes=[...new Set(relevant.flatMap(x=>[x.observations,x.observation,x.defect,x.problem,x.supplierResponse,x.notes])
+    .map(x=>String(x||'').trim()).filter(Boolean))];
+  const report='LIQUIDACIÓN '+id+' / '+(supplier||'PROVEEDOR NO IDENTIFICADO')+'\n'+
+    'Notas recuperables del histórico: '+notes.length+'\n\n'+(notes.join('\n\n')||'No se encontraron notas históricas para este proveedor.')+
+    '\n\nEl sistema NO rellenará automáticamente datos que no existan.';
+  return {report,notes};
+ }
+ function cloudClaim001(){
+   return localClaims.find(x=>norm(x.claim)==='2026-001')||null;
+ }
  window.soleGestionOcultos={
    restaurar:id=>hiddenCloudAction(id,'restore'),
    eliminar:id=>hiddenCloudAction(id,'delete'),
+   limpiarConservando:bulkKeepAndClean,
+   notas001:historicalNotes001,
    get estado(){return {ready,rol:role,busy,dirty,conflict}}
  };
  function wireControls(){
