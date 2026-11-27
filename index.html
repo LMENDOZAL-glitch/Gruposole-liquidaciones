@@ -1889,8 +1889,10 @@ function editProductClaimFull(claim){
   let c=localClaims.find(x=>canon(x.claim)===canon(claim)&&claimTypeOf(x)==='PRODUCTO')||claimDataByNo(claim);
   if(!c||claimTypeOf(c)!=='PRODUCTO'){alert('Esta edición completa está disponible para liquidaciones de producto.');return}
   window.pcEditingSavedAmount=+c.amount||0;
-  window.soleBlockedConsolidationActive=!!(c.consolidatedBlocked||c.builderSnapshot?.consolidatedBlocked);
+  window.soleBlockedConsolidationActive=!!(c.consolidatedBlocked||c.builderSnapshot?.consolidatedBlocked||c.builderSnapshot?.lines?.some(l=>l.blockedConsolidation));
   go('productclaims');
+  // Navegar puede inicializar un formulario nuevo y limpiar el indicador. Restaurar desde el registro guardado.
+  window.soleBlockedConsolidationActive=!!(c.consolidatedBlocked||c.builderSnapshot?.consolidatedBlocked||c.builderSnapshot?.lines?.some(l=>l.blockedConsolidation));
   let s=c.builderSnapshot||null;
   let savedLinesForMode=(s&&Array.isArray(s.lines)?s.lines:(Array.isArray(c.rows)?c.rows:[]));
   let detectedReturnModeV101=(String(s?.mode||'').toUpperCase()==='DEVOLUCION')||savedLinesForMode.some(r=>String(r?.source||r?.origin||r?.ORIGEN||'').toUpperCase().includes('DEVOLUCI'));
@@ -2893,7 +2895,20 @@ function generateReturnSupplierDocument(asPdf=false){
   }
 }
 function generateSupplierClaimDocument(asPdf=false){
-  if(window.soleBlockedConsolidationActive && typeof window.soleGenerateBlockedCompactDoc==='function')return window.soleGenerateBlockedCompactDoc(asPdf);
+  // Reconocer consolidados bloqueados guardados aunque el indicador temporal del editor se haya reiniciado.
+  const exportClaim=String($('pcClaimNo')?.value||'').trim();
+  const storedBlocked=typeof claimDataByNo==='function'?claimDataByNo(exportClaim):null;
+  const linesBlocked=Array.isArray(productClaimLines)&&productClaimLines.some(l=>l?.blockedConsolidation===true);
+  const noteBlocked=/CONSOLIDADO POR PROVEEDOR DE PRODUCTOS BLOQUEADOS/i.test(String($('pcNotes')?.value||''));
+  const blockedExport=!!(window.soleBlockedConsolidationActive||linesBlocked||
+    storedBlocked?.consolidatedBlocked||storedBlocked?.builderSnapshot?.consolidatedBlocked||
+    storedBlocked?.builderSnapshot?.lines?.some(l=>l.blockedConsolidation)||noteBlocked);
+  if(blockedExport && !isReturnClaimV102()){
+    if(typeof window.soleGenerateBlockedCompactDoc!=='function'){
+      alert('No se cargó el módulo de PDF compacto. Actualiza la página con Ctrl + Shift + R.');return false;
+    }
+    return window.soleGenerateBlockedCompactDoc(asPdf);
+  }
   if(isReturnClaimV102()){generateReturnSupplierDocument(asPdf);return}
   if(!productClaimLines.length){alert('Agrega al menos un producto/código.');return}
   // Abrir la pestaña al inicio del clic evita que Chrome bloquee el PDF mientras se compone el informe.
@@ -6561,7 +6576,7 @@ body.ui-v126 .q129-state option{background:var(--u-surface,#fff);color:var(--u-i
 <script src="comite-fallas.js" defer></script>
 <script src="pdf-registro.js" defer></script>
 <script src="consolidado-bloqueados.js" defer></script>
-<script src="pdf-consolidado-bloqueados.js" defer></script>
+<script src="pdf-consolidado-bloqueados.js?v=20261127-2" defer></script>
 <script src="repuestos-consolidados.js" defer></script>
 <!-- Restauración V124 completada: importador retirado de la interfaz. Se conserva el módulo en el repositorio para respaldo. -->
 </body></html>
