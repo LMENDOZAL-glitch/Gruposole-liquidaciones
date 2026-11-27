@@ -754,6 +754,18 @@
    const prior=snapshot.exists?fromFirestore(snapshot.data()):null;
    if(!prior && !([...deletedClaims].some(k=>norm(k)===id)))
      throw Error('No hay una marca de ocultamiento para restaurar.');
+   const historical=(Array.isArray(HIST)?HIST:[]).filter(x=>norm(x.claim)===id);
+   const backupRecord=(Array.isArray(localClaims)?localClaims:[]).find(x=>norm(x.claim)===id)||null;
+   const hasRecord=!!(prior?.registro||backupRecord||historical.length);
+   if(!hasRecord)throw Error('Este número está oculto, pero no tiene ficha recuperable. No se ha modificado Firebase.');
+   const reconstructed=prior?.registro||backupRecord||{
+     claim:id,claimType:'PRODUCTO',source:'HISTÓRICO',supplier:historical.find(x=>x.supplier)?.supplier||'',
+     status:historical.find(x=>x.status)?.status||'PENDIENTE',
+     amount:Number(historical.find(x=>x.unique)?.uniqueAmount??historical[0]?.amount??0),
+     problem:historical.find(x=>x.defect)?.defect||'',
+     observations:historical.find(x=>x.observations)?.observations||'',
+     rows:copy(historical),date:historical.find(x=>x.date)?.date||''
+   };
    const currentRev=snapshot.exists?String(snapshot.data().revision||''):null;
    const revision=(self.crypto?.randomUUID?.()||String(Date.now()));
    busy=true;
@@ -762,8 +774,11 @@
      const cur=await tx.get(ref);
      if((currentRev===null&&cur.exists)||(currentRev!==null&&(!cur.exists||String(cur.data()?.revision||'')!==currentRev)))
        throw Error('El expediente cambió en otro equipo. Recarga antes de restaurar.');
-     const payload=cur.exists?cur.data():toFirestore({claim:id,registro:null,edicion:{},compensaciones:[],eliminada:false});
-     tx.set(ref,{...payload,claim:id,eliminada:false,revision,version:126,
+     const payload=cur.exists?cur.data():toFirestore({claim:id,registro:reconstructed,edicion:{},compensaciones:[],eliminada:false});
+     const oldData=cur.exists?fromFirestore(cur.data()):null;
+     const restoredData=oldData?.registro?payload:toFirestore({...oldData,claim:id,registro:reconstructed,
+       edicion:oldData?.edicion||{},compensaciones:oldData?.compensaciones||[],eliminada:false});
+     tx.set(ref,{...restoredData,claim:id,eliminada:false,revision,version:126,
        autor:user.uid,actualizado:firebase.firestore.FieldValue.serverTimestamp()});
     });
     // Refrescar desde la fuente real antes de comunicar éxito.
